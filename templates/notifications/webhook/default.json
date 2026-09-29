@@ -7,5 +7,5 @@
   "episode": "S{season}E{episode}",
   "source": "{source}",
   "error": "{error_message}",
-  "extra": {}
+  "extra": "__type_fields__"
 }

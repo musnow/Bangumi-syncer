@@ -2941,8 +2941,11 @@
                                         <textarea class="form-control"
                                                   id="inline-webhook-template"
                                                   rows="5"
-                                                  placeholder='{"content": "📢 {title} S{season}E{episode} - {notification_type}"}'></textarea>
+                                                  placeholder='留空则使用内置模板（推荐）'></textarea>
                                         <div class="form-text">
+                                            <strong>建议留空</strong>：留空时使用内置模板，并自动附带该通知类型的专属内容（如追番总结的总结正文）。
+                                            只有需要自定义 JSON 结构时才填写 —— 自定义模板会<strong>完全替换</strong>内置结构。
+                                            <br>
                                             支持 JSON 格式，通用变量：{timestamp}, {user_name}, {bgm_username}, {title},
                                             {ori_title}, {bgm_title}, {season}, {episode}, {source}, {error_type},
                                             {error_message}, {notification_type}, {subject_id}, {episode_id}
@@ -2950,6 +2953,11 @@
                                             追番总结事件：{job_name}, {summary_text}, {date_range}, {record_count},
                                             {lookback_days}, {model}, {tokens_used}
                                         </div>
+                                        <button type="button"
+                                                class="btn btn-outline-secondary btn-sm mt-2"
+                                                onclick="fillDefaultTemplate(this, 'webhook', 'inline-webhook-template')">
+                                            <i class="bi bi-clipboard me-1"></i>填入内置模板作为起点
+                                        </button>
                                     </div>
                                     <div class="d-flex gap-2">
                                         <button type="button" class="btn btn-primary" onclick="saveWebhookInline()">
@@ -4080,6 +4088,21 @@
     }
   }
 
+  // 把内置默认模板填入编辑框，作为用户自定义的起点。
+  // 注意：默认保持留空 —— 留空时后端会使用内置模板，并自动带上该通知
+  // 类型的专属字段（如追番总结的全文）。一旦把通用模板存进配置，它会
+  // 覆盖类型专属内容，因此这里改为显式按钮触发，而非自动填充。
+  async function fillDefaultTemplate(btn, channel, textareaId) {
+    await loadDefaultTemplate(channel, textareaId)
+    if (btn) {
+      const original = btn.textContent
+      btn.textContent = '已填充'
+      setTimeout(() => {
+        btn.textContent = original
+      }, 1500)
+    }
+  }
+
   // ========== 邮件模板列表 ==========
 
   async function loadEmailTemplateList() {
@@ -4145,9 +4168,9 @@
     document.getElementById('inline-webhook-url').value = ''
     document.getElementById('inline-webhook-method').value = 'POST'
     document.getElementById('inline-webhook-headers').value = ''
+    // 留空 = 使用内置模板（自带该通知类型的专属字段），不再自动填充
     document.getElementById('inline-webhook-template').value = ''
     document.getElementById('channel-webhook-editor').style.display = ''
-    loadDefaultTemplate('webhook', 'inline-webhook-template')
   }
 
   async function showEditWebhookEditor(webhookId) {
@@ -4442,7 +4465,6 @@
     document.getElementById('inline-wecom-msg-type').value = 'text'
     document.getElementById('inline-wecom-template').value = ''
     document.getElementById('channel-wecom-editor').style.display = ''
-    loadDefaultTemplate('wecom', 'inline-wecom-template')
   }
 
   async function showEditWeComEditor(wecomId) {
@@ -4542,7 +4564,6 @@
     document.getElementById('inline-dingtalk-msg-type').value = 'text'
     document.getElementById('inline-dingtalk-template').value = ''
     document.getElementById('channel-dingtalk-editor').style.display = ''
-    loadDefaultTemplate('dingtalk', 'inline-dingtalk-template')
   }
 
   async function showEditDingTalkEditor(dingtalkId) {

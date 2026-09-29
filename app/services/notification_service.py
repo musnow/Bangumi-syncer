@@ -439,6 +439,9 @@ class NotificationService:
 
                     obj = json.loads(inline_tpl)
                     payload = self.template_mgr.render_value(obj, type_data)
+                    # 用户模板可能整体手写而漏掉类型特有字段（如追番总结的
+                    # summary）。此处无条件补齐，避免"模板能发但内容缺失"。
+                    payload = self.template_mgr.merge_type_fields(payload, type_data)
                 except Exception:
                     payload = self.template_mgr.render_webhook_payload(
                         type_data, fallback=type_data

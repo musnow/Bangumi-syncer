@@ -39,6 +39,11 @@ from ...core.logging import logger
 # 占位符正则：匹配 {variable}，变量名仅允许字母/数字/下划线
 _PLACEHOLDER_RE = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
 
+# webhook 默认模板中代表"该类型的特有字段集合"的哨兵值。
+# 渲染时若某字段恰好等于此字符串，说明模板在此处声明了类型特有字段的位置，
+# 该字段会被替换成 registry 中声明的 payload_fields。
+_TYPE_FIELDS_PLACEHOLDER = "__type_fields__"
+
 
 @dataclass(frozen=True)
 class TemplateAsset:
@@ -136,6 +141,11 @@ class NotificationTemplateManager:
 
         所有通知类型共用同一个默认 JSON；用户可在自定义目录放置
         ``webhook/default.json`` 覆盖整体格式，无需按类型拆分。
+
+        模板中形如 ``{type_fields}`` 的占位符会被替换为该通知类型在
+        :mod:`app.core.notification_registry` 中声明的类型特有字段
+        （如追番总结的 ``summary``），从而让通用模板也能表达类型专属内容，
+        不必为每个类型单独准备模板。
         """
         raw = self.find_asset("webhook", "default", "json")
         if raw is None:
@@ -148,7 +158,46 @@ class NotificationTemplateManager:
         rendered = self.render_value(obj, data)
         if not isinstance(rendered, dict):
             return {"data": rendered}
-        return rendered
+        # 展开类型特有字段（占位符不会出现在 data 里的键，故需单独处理）
+        return self.merge_type_fields(rendered, data)
+
+    @staticmethod
+    def type_fields(data: dict[str, Any]) -> dict[str, Any]:
+        """该通知类型的特有字段（占位符名 → 值，缺失的丢弃）"""
+        from ...core.notification_registry import get_type_meta
+
+        notification_type = str(data.get("notification_type") or "")
+        meta = get_type_meta(notification_type)
+        if meta is None:
+            return {}
+        out: dict[str, Any] = {}
+        for field_name, data_key in meta.default_payload_fields().items():
+            value = data.get(data_key)
+            if value not in (None, ""):
+                out[field_name] = value
+        return out
+
+    def merge_type_fields(self, payload: Any, data: dict[str, Any]) -> Any:
+        """把类型特有字段并入已渲染的 payload。
+
+        - 若 payload 内含 ``extra: __type_fields__`` 哨兵，则就地展开到 payload 顶层；
+        - 否则（用户自定义模板未声明 extra）直接补齐到顶层，
+          保证类型专属内容不因模板写法而丢失。
+
+        非 dict 的 payload 原样返回。
+        """
+        if not isinstance(payload, dict):
+            return payload
+        fields = self.type_fields(data)
+        if not fields:
+            return payload
+        for key, value in list(payload.items()):
+            if value == _TYPE_FIELDS_PLACEHOLDER:
+                del payload[key]
+                break
+        for key, value in fields.items():
+            payload.setdefault(key, value)
+        return payload
 
     def render_email(
         self, data: dict[str, Any], template_name: str = "default"
