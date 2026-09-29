@@ -174,7 +174,7 @@ Bangumi-syncer 可以在关键时刻主动给你发消息——同步成功、�
 
 ```json
 {
-  "title": "{type_icon} {type_display_name}",
+  "title": "{payload_title}",
   "type": "{notification_type}",
   "timestamp": "{timestamp}",
   "user": "{user_name}",
@@ -182,11 +182,17 @@ Bangumi-syncer 可以在关键时刻主动给你发消息——同步成功、�
   "episode": "S{season}E{episode}",
   "source": "{source}",
   "error": "{error_message}",
-  "extra": {}
+  "extra": "__type_fields__"
 }
 ```
 
-- **邮件**：所有事件共用 `templates/notifications/email/default.html` 单文件。邮件主题从 HTML 的 `<title>` 标签提取，纯文本 body 由 HTML 去标签生成作为 fallback。
+其中 `extra` 会被自动替换为**该事件类型特有的字段**（见下方「事件专属字段」）。例如追番总结会多出 `summary`、`job_name`、`date_range` 等，同步失败会多出 `error_type`。
+
+::: tip 建议把「消息模板」留空
+留空时系统自动使用内置模板，并自动带上事件专属字段。若把内置模板内容复制进「消息模板」输入框保存，就会**固定**成一份静态结构，之后即便系统给某类事件补充了专属字段，你也不会收到——这是历史上「追番总结收不到正文」的成因。
+:::
+
+- **邮件**：所有事件共用 `templates/notifications/email/default.html` 单文件。邮件主题从 HTML 的 `<title>` 标签提取（与 Webhook 的 `title` 同源，因此追番总结会显示为「📊 追番总结 - 任务名」），纯文本 body 由 HTML 去标签生成作为 fallback。追番总结的正文会渲染在邮件正文区。
 - **企业微信 / 钉钉**：渠道配置的「消息模板」字段留空时，由代码内置构造消息体（`text` 或 `markdown` 两种格式）。如需自定义格式，在「消息模板」字段填内联 JSON。
 - **站内信**：标题使用注册表中类型的 `in_app_title_template`，正文使用 `error_message` 或 `message` 字段。
 
@@ -275,6 +281,35 @@ templates/
 ::: tip 未提供的变量怎么办？
 模板中未提供的占位符在渲染时会被替换为**空字符串**（不会保留 `{xxx}` 字面量）。所以你可以放心地把所有变量都写进模板，没值时自动留空。
 :::
+
+### 事件专属字段
+
+除了上面这些通用占位符，**每类事件还有自己的专属字段**，会由系统自动附加到 Webhook 的 `extra` 里、并渲染进邮件正文。你不必手动声明：
+
+| 事件                       | 专属字段                                                                 |
+| -------------------------- | ------------------------------------------------------------------------ |
+| 追番总结 `watching_summary` | `job_name`、`summary`、`date_range`、`record_count`、`model`、`tokens_used` |
+| 候选待确认 `pending_candidate` | `candidates_count`、`top_candidate_id`、`top_candidate_name`            |
+| 匹配歧义 `match_ambiguous` | `final_subject_id`、`top1_name`、`top1_subject_id`、`top1_score`、`top2_name`、`top2_subject_id`、`top2_score`、`score_diff` |
+| 标记成功 / 跳过 / 排队     | `subject_id`、`episode_id`、`bgm_title`、`bgm_username`                   |
+| 找到番剧 `bangumi_id_found` | `subject_id`、`bgm_title`                                                |
+| 今日放送 `airing_today`    | `airdate`、`total`                                                       |
+| 批量同步汇总               | `total`、`succeeded`、`failed`、`skipped`                                 |
+| 队列积压告警               | `pending_count`、`threshold`                                             |
+| IP 锁定 `ip_locked`        | `ip`、`locked_until`、`attempt_count`、`max_attempts`                     |
+| 归档磁盘告警               | `available_mb`、`required_mb`、`warning_threshold_mb`                     |
+| 版本升级可用               | `current_version`、`latest_version`                                       |
+| 调度任务失败               | `driver`、`is_timeout`                                                    |
+| 总结任务 / LLM 失败        | `job_name`（LLM 失败另有 `model`）                                        |
+| API 类错误                 | `status_code`（重试失败另有 `url`、`method`、`retry_count`）              |
+
+其余类型（如 `mark_failed`、`anime_not_found`）没有专属字段，用通用占位符即可。
+
+这些字段的取值规则是：**有值才出现，无值则整个键省略**（不会输出 `0` 或空串）。
+
+::: warning 不要把这些字段"抄"进自定义模板
+如果你手写的模板里漏了某个专属字段，系统仍会自动补上（用户写的键优先）。但如果你在模板里**显式**写死成常量（比如 `"summary": ""`），那就会把真实内容覆盖成空。需要专属字段时，保持 `extra` 为 `__type_fields__` 即可。
+:::`
 
 ---
 
@@ -477,6 +512,15 @@ Docker 部署时，需要把 `templates` 目录挂载进容器。在 `docker-com
 1. Web 界面的「配置管理 → 通知配置 → 测试」按钮：向指定渠道发一条固定测试事件，模板会按占位符替换。
 2. 临时改模板后无需重启程序：通知系统**每次事件都重新读模板**。
 3. Webhook 类渠道的「消息模板」字段可临时粘 JSON 调试，调好后再固化到 `templates/`。
+
+### Q：升级后我的通知内容和以前不一样了？
+
+近期版本对通知模板做了两处修正，都属于「恢复应有内容」：
+
+1. **追番总结的正文以前可能丢失**。原因是配置页曾在你「添加 Webhook」时自动把内置模板填进「消息模板」输入框，保存后这份静态模板会一直覆盖掉事件专属字段。现在配置页不再自动填充；标题也恢复了「📊 追番总结 - 任务名」的形式（此前只有「📊 追番总结」，多个总结任务无法区分）。
+2. **邮件正文现在会带上追番总结全文**。此前邮件只显示时间/番剧/用户/来源四行，总结正文没有出现在邮件里。
+
+如果你的「消息模板」字段里存着自己早前粘贴的 JSON，且希望获得上述自动补齐行为，把它**清空**即可（留空使用内置模板）。
 
 ---
 
