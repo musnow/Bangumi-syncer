@@ -91,7 +91,7 @@ Bangumi-syncer 可以在关键时刻主动给你发消息——同步成功、�
 | 自定义模板文件路径 | 否         | 高级选项，指向本地 `email/<name>.{subject.txt,body.txt,html}` 三件套；留空使用默认模板 |
 
 ::: tip 邮件是唯一支持 HTML 富文本的渠道
-追番总结这种长文 + 排版 + 表格 + emoji 的内容，强烈建议走邮件渠道。详见下方 [邮件自定义模板教程](#邮件自定义模板教程)。
+追番总结这种长文 + 排版 + 表格 + emoji 的内容，强烈建议走邮件渠道。邮件默认模板会直接把总结正文渲染进正文区，无需额外配置；要换样式见下方 [自定义模板（高阶）](#自定义模板-高阶)。
 :::
 
 ### 企业微信
@@ -158,17 +158,19 @@ Bangumi-syncer 可以在关键时刻主动给你发消息——同步成功、�
 
 ## 模板系统
 
-模板决定「消息长什么样」。本系统支持**三种模板来源**：
+模板决定「消息长什么样」。
 
-| 模式                   | 配置方式                             | 适用场景                                                      |
-| ---------------------- | ------------------------------------ | ------------------------------------------------------------- |
-| **默认模板**           | 渠道配置中模板字段**留空**           | 绝大多数用户；随程序升级自动优化                              |
-| **自定义模板（文件）** | 在 `templates/<channel>/` 目录放文件 | 多人/多设备共享同一份自定义格式；**仅 Webhook 与邮件支持**    |
-| **内联 JSON**          | 渠道配置中直接粘 JSON 字符串         | 临时调试、单条渠道单独定制；**Webhook / 企业微信 / 钉钉支持** |
+::: tip 强烈建议：先用默认模板，别急着自定义
+**默认模板已经能正确发送所有事件，包括追番总结的正文和标题里的任务名，并会随程序升级自动获得改进。** 你不需要为了「让消息好看一点」去手写模板。
 
-### 1. 默认模板
+只有在下面这种情况下才需要自定义：你明确想要**和默认不一样的排版**（比如企业微信里换一种 Markdown 结构、邮件里加公司 Logo 和页脚）。
 
-不需要任何配置。系统按渠道使用内置模板：
+自定义属于**高阶操作**，代价是：默认模板将来新增的字段不会自动出现在你的模板里，需要你自己跟。详见 [自定义模板（高阶）](#自定义模板-高阶)。
+:::
+
+### 默认模板（推荐，零配置）
+
+渠道配置中模板字段**留空**即可，系统按渠道使用内置模板：
 
 - **Webhook**：使用 `templates/notifications/webhook/default.json`，结构为：
 
@@ -188,43 +190,9 @@ Bangumi-syncer 可以在关键时刻主动给你发消息——同步成功、�
 
 其中 `extra` 会被自动替换为**该事件类型特有的字段**（见下方「事件专属字段」）。例如追番总结会多出 `summary`、`job_name`、`date_range` 等，同步失败会多出 `error_type`。
 
-::: tip 建议把「消息模板」留空
-留空时系统自动使用内置模板，并自动带上事件专属字段。若把内置模板内容复制进「消息模板」输入框保存，就会**固定**成一份静态结构，之后即便系统给某类事件补充了专属字段，你也不会收到——这是历史上「追番总结收不到正文」的成因。
-:::
-
 - **邮件**：所有事件共用 `templates/notifications/email/default.html` 单文件。邮件主题从 HTML 的 `<title>` 标签提取（与 Webhook 的 `title` 同源，因此追番总结会显示为「📊 追番总结 - 任务名」），纯文本 body 由 HTML 去标签生成作为 fallback。追番总结的正文会渲染在邮件正文区。
-- **企业微信 / 钉钉**：渠道配置的「消息模板」字段留空时，由代码内置构造消息体（`text` 或 `markdown` 两种格式）。如需自定义格式，在「消息模板」字段填内联 JSON。
+- **企业微信 / 钉钉**：渠道配置的「消息模板」字段留空时，由代码内置构造消息体（`text` 或 `markdown` 两种格式）。
 - **站内信**：标题使用注册表中类型的 `in_app_title_template`，正文使用 `error_message` 或 `message` 字段。
-
-### 2. 自定义模板（文件方式）
-
-仅 **Webhook** 与 **邮件** 渠道支持自定义模板文件。企业微信 / 钉钉 / 站内信 不走模板目录查找，自定义格式请使用内联 JSON。
-
-按以下步骤操作：
-
-1. 在项目根目录查找 `templates/<channel>/` 目录，其中 `<channel>` 取值为 `webhook` 或 `email`。
-2. 在该目录下放置与默认模板**同名**的文件即可覆盖。
-3. 渠道配置中模板字段**填入文件名**（不含扩展名）。例如 `default` 表示使用 `templates/webhook/default.json`（或邮件的 `templates/email/default.html`）。
-
-**目录结构示例**：
-
-```
-templates/
-├── webhook/
-│   └── default.json         # Webhook 默认模板
-└── email/
-    └── default.html         # 邮件默认 HTML 模板
-```
-
-### 3. 内联 JSON
-
-在 Webhook / 企业微信 / 钉钉的「消息模板」字段直接粘 JSON 字符串。**仅对本渠道生效**，不影响默认模板和其他渠道。
-
-适合场景：调试时临时改格式；只想给某一条 Webhook 加点装饰；给企业微信 / 钉钉自定义消息体（这两类渠道不支持模板文件，只能用内联 JSON）。
-
-::: warning 内联 JSON 不能用于邮件
-邮件使用 HTML 模板渲染，不支持内联 JSON。要给邮件定制请使用「自定义模板（文件）」或修改默认模板 `templates/notifications/email/default.html`。
-:::
 
 ---
 
@@ -243,6 +211,7 @@ templates/
 | `{notification_type}` | 事件类型标识                             | `mark_failed`         |
 | `{type_display_name}` | 事件类型中文展示名                       | `同步失败`            |
 | `{type_icon}`         | 事件类型图标（emoji）                    | `❌`                  |
+| `{payload_title}`     | 事件标题（含图标，追番总结会带任务名）   | `📊 追番总结 - 每日总结` |
 
 ### 番剧与集数
 
@@ -307,38 +276,67 @@ templates/
 
 这些字段的取值规则是：**有值才出现，无值则整个键省略**（不会输出 `0` 或空串）。
 
-::: warning 不要把这些字段"抄"进自定义模板
-如果你手写的模板里漏了某个专属字段，系统仍会自动补上（用户写的键优先）。但如果你在模板里**显式**写死成常量（比如 `"summary": ""`），那就会把真实内容覆盖成空。需要专属字段时，保持 `extra` 为 `__type_fields__` 即可。
-:::`
-
 ---
 
-## 邮件自定义模板教程
+## 自定义模板（高阶）
 
-邮件是**唯一支持 HTML 富文本**的渠道，特别适合追番总结、每日放送早报等需要排版的内容。本节从零开始介绍如何写一份自定义邮件模板。
+::: warning 这是高阶操作，先确认你确实需要
+动手前请想清楚：**默认模板已经能正确发送所有事件**。自定义模板意味着你要自己维护一份格式，并对将来新增的字段负责。
 
-### 第 1 步：选择模板来源
+如果你的目的是「让 Webhook 的 JSON 结构符合我的接收端要求」，或「让企业微信消息用另一种排版」，那自定义是合适的。如果只是觉得默认样式不够好看，改邮件模板即可，**不必动 Webhook**。
+:::
 
-邮件模板有 3 种来源，按需求选一种：
+### 先读：三种自定义方式
 
-| 想要的效果                         | 推荐方式                                                                           |
-| ---------------------------------- | ---------------------------------------------------------------------------------- |
-| 不想折腾，用默认样式               | 渠道配置的「自定义模板文件路径」**留空**                                           |
-| 覆盖默认样式，所有邮件都用我的样式 | 在 `templates/email/default.html` 放文件                                           |
-| 多套样式按需切换                   | 在 `templates/email/<name>.html` 放文件，渠道配置「自定义模板文件路径」填 `<name>` |
+| 方式 | 配置方式 | 适用渠道 | 风险 |
+| --- | --- | --- | --- |
+| **自定义模板（文件）** | 在 `templates/<channel>/` 目录放文件 | **仅 Webhook 与邮件** | 中：文件覆盖默认模板，升级后不会自动获得新字段 |
+| **内联 JSON** | 渠道配置中直接粘 JSON 字符串 | **Webhook / 企业微信 / 钉钉** | 高：写死在配置里，最容易漏掉事件专属字段 |
+| 默认模板（推荐） | 模板字段留空 | 全部 | 无 |
 
-### 第 2 步：创建模板文件
+### ⚠️ 自定义前必读：不要丢掉 `extra`
 
-在项目根目录创建 `templates/email/` 目录，里面放一个 `.html` 文件。文件名自由命名（如 `default.html`、`fancy.html`），不带扩展名的部分就是「模板名」。
+::: danger 这一步做错会导致内容静默丢失
+Webhook 的默认模板用一个特殊值 `"extra": "__type_fields__"` 来接收**事件专属字段**（如追番总结的 `summary`）。你自己写模板时：
+
+- **要保留专属字段** → 原样写下 `"extra": "__type_fields__"`。
+- **不要**写成 `"extra": {}` 或省略 —— 那样追番总结就只有标题、没有正文。
+- **不要**把专属字段手抄成固定的空值（如 `"summary": ""`），那会把真实内容覆盖成空。
+
+系统会尽量为你兜底（你模板里漏写的专属字段会被自动补回，且你显式写的键优先），但**显式写死的空值它无法挽救**。正是因为这一点，我们才建议把「消息模板」留空。
+:::
+
+**正确的自定义 Webhook 模板示例**（在默认结构上增加自己的字段）：
+
+```json
+{
+  "title": "{payload_title}",
+  "type": "{notification_type}",
+  "timestamp": "{timestamp}",
+  "user": "{user_name}",
+  "anime": "{title}",
+  "episode": "S{season}E{episode}",
+  "error": "{error_message}",
+  "extra": "__type_fields__",
+  "my_custom_field": "固定值",
+  "server": "{source}"
+}
+```
+
+### 自定义模板文件（仅 Webhook / 邮件）
+
+1. 在项目根目录查找 `templates/<channel>/` 目录，其中 `<channel>` 取值为 `webhook` 或 `email`。
+2. 在该目录下放置与默认模板**同名**的文件即可覆盖（Webhook 是 `.json`，邮件是 `.html`）。
+3. 渠道配置中模板字段**填入文件名**（不含扩展名）。例如 `default` 表示使用 `templates/webhook/default.json`（或邮件的 `templates/email/default.html`）。
 
 **目录结构示例**：
 
 ```
-项目根目录/
-└── templates/
-    └── email/
-        ├── default.html      # 模板名 = default
-        └── fancy.html        # 模板名 = fancy
+templates/
+├── webhook/
+│   └── default.json         # Webhook 默认模板
+└── email/
+    └── default.html         # 邮件默认 HTML 模板
 ```
 
 ::: tip Docker 部署
@@ -350,15 +348,15 @@ Docker 部署时，需要把 `templates` 目录挂载进容器。在 `docker-com
 
 :::
 
-### 第 3 步：编写 HTML 模板
+### 写一个自定义邮件模板
 
-一个最小的邮件模板示例：
+邮件是**唯一支持 HTML 富文本**的渠道，特别适合追番总结、每日放送早报等需要排版的内容。一个最小的可用模板：
 
 ```html
 <!DOCTYPE html>
 <html>
   <head>
-    <title>[Bangumi-Syncer] {type_display_name}</title>
+    <title>{payload_title}</title>
   </head>
   <body style="font-family: sans-serif; padding: 20px;">
     <h2 style="color: #dc3545;">{type_icon} {type_display_name}</h2>
@@ -366,41 +364,43 @@ Docker 部署时，需要把 `templates` 目录挂载进容器。在 `docker-com
     <p><strong>用户：</strong>{user_name}</p>
     <p><strong>时间：</strong>{timestamp}</p>
     <p><strong>错误：</strong>{error_message}</p>
+    <div style="white-space: pre-wrap;">{summary_text}</div>
   </body>
 </html>
 ```
 
 **关键点**：
 
-- 邮件**主题**从 HTML 的 `<title>` 标签提取。所以 `<title>` 里写什么，邮件标题就是什么。
+- 邮件**主题**从 HTML 的 `<title>` 标签提取。写 `{payload_title}` 可得到与默认模板一致的标题（含任务名）；写死文字则所有邮件都是那个标题。
 - 邮件**正文**是 `<body>` 内的内容。
 - 所有 [可用占位符](#可用占位符-变量) 都可以用 `{变量名}` 写在 HTML 任意位置。
 - 内联 CSS 样式（`style="..."`）兼容性最好，避免用 `<style>` 标签或外部 CSS。
+- 想保留追番总结正文，务必写上 `{summary_text}`（默认模板里已包含）。
 
-### 第 4 步：在渠道配置中填模板名
+**多套模板按需切换**：文件名自由命名（如 `default.html`、`fancy.html`），不带扩展名的部分就是「模板名」。在渠道配置的「自定义模板文件路径」填该名字即可：
 
-打开「配置管理 → 通知配置 → 渠道配置 → 邮件 Tab」，编辑你的邮件渠道：
+- 留空 → 用默认模板 `templates/notifications/email/default.html`
+- 填 `fancy` → 用 `templates/email/fancy.html`
 
-- **自定义模板文件路径**：填模板名（**不带扩展名**）。
-  - 留空 → 用默认模板 `templates/notifications/email/default.html`
-  - 填 `default` → 用 `templates/email/default.html`
-  - 填 `fancy` → 用 `templates/email/fancy.html`
-- **邮件标题模板**：留空则从 HTML 的 `<title>` 提取；填了则覆盖主题。
+### 邮件模板查找优先级
 
-保存后立即生效，**无需重启程序**。
+完整查找顺序（排在前面的优先）：
 
-### 第 5 步：测试模板
+1. 渠道配置的 `email_subject` 字段（仅覆盖主题，不覆盖正文）
+2. 自定义目录 `templates/email/<name>.html`（`<name>` 来自渠道配置的「自定义模板文件路径」）
+3. 仓库默认目录 `templates/notifications/email/<name>.html`
+4. 代码 fallback（返回 `[Bangumi-Syncer] {payload_title}` 主题 + 空 body）
 
-1. 在「渠道配置 → 邮件 Tab」点击「测试」按钮，会向该渠道发一条固定测试事件。
-2. 收到邮件后检查样式是否符合预期。
-3. 改完模板再点「测试」，反复迭代。
+::: tip 永远不会报错
+查找顺序「自定义目录 → 默认目录 → 代码 fallback」保证**永远不会因为模板问题导致通知发不出去**。最多是「自定义模板没生效」——先确认文件名拼写一致，再确认扩展名正确（Webhook 是 `.json`，邮件是 `.html`）。
+:::
 
-::: tip 调试小技巧
+### 测试与调试
 
-- 改模板后**不需要重启程序**，通知系统每次发邮件都会重新读模板。
-- 用浏览器开发者工具（F12）预览 HTML，比每次发邮件都快。
-- 部分邮件客户端（如 Outlook）对 CSS 兼容性较差，复杂样式建议用表格布局 + 内联样式。
-  :::
+1. 在「渠道配置」对应 Tab 点击「测试」按钮，会向该渠道发一条固定测试事件，走的是**和线上完全相同**的渲染路径。
+2. 改模板后**不需要重启程序**，通知系统每次发送都会重新读模板。
+3. 用浏览器开发者工具（F12）预览 HTML，比每次发邮件都快。
+4. 部分邮件客户端（如 Outlook）对 CSS 兼容性较差，复杂样式建议用表格布局 + 内联样式。
 
 ### 完整示例：追番总结邮件模板
 
@@ -408,7 +408,7 @@ Docker 部署时，需要把 `templates` 目录挂载进容器。在 `docker-com
 <!DOCTYPE html>
 <html>
   <head>
-    <title>番剧追番总结 - {timestamp}</title>
+    <title>{payload_title}</title>
   </head>
   <body
     style="font-family: -apple-system, 'PingFang SC', sans-serif; padding: 20px; background-color: #f5f5f5;"
@@ -419,46 +419,31 @@ Docker 部署时，需要把 `templates` 目录挂载进容器。在 `docker-com
       <h2
         style="color: #ff6b6b; border-bottom: 2px solid #ff6b6b; padding-bottom: 10px;"
       >
-        📺 追番总结
+        {type_icon} {type_display_name}
       </h2>
       <p style="color: #666; font-size: 14px;">
-        {timestamp} · 用户：{user_name}
+        {date_range} · 共 {record_count} 条记录
       </p>
       <div
-        style="margin-top: 20px; padding: 15px; background: #f8f9fa; border-left: 4px solid #ff6b6b;"
+        style="margin-top: 20px; padding: 15px; background: #f8f9fa; border-left: 4px solid #ff6b6b; white-space: pre-wrap; line-height: 1.7;"
       >
-        <strong>番剧：</strong>{title}<br />
-        <strong>进度：</strong>S{season}E{episode}<br />
-        <strong>来源：</strong>{source}
+        {summary_text}
       </div>
       <p style="margin-top: 20px; color: #999; font-size: 12px;">
-        本邮件由 Bangumi-syncer 自动发送
+        本邮件由 Bangumi-syncer 自动发送 · {timestamp}
       </p>
     </div>
   </body>
 </html>
 ```
 
-### 邮件模板查找优先级
-
-完整查找顺序（排在前面的优先）：
-
-1. 渠道配置的 `email_subject` 字段（仅覆盖主题，不覆盖正文）
-2. 自定义目录 `templates/email/<name>.html`（`<name>` 来自渠道配置的「自定义模板文件路径」）
-3. 仓库默认目录 `templates/notifications/email/<name>.html`
-4. 代码 fallback（返回 `[Bangumi-Syncer] {type_display_name}` 主题 + 空 body）
-
-::: tip 永远不会报错
-查找顺序「自定义目录 → 默认目录 → 代码 fallback」保证**永远不会因为模板问题导致通知发不出去**。最多是「自定义模板没生效」——先确认文件名拼写一致，再确认扩展名是 `.html`。
-:::
-
 ---
 
-## 自定义模板示例（其他渠道）
+## 内联 JSON 示例（企业微信 / 钉钉）
 
-### 示例 1：企业微信用 Markdown 显示
+企业微信 / 钉钉不支持模板文件，只能用在渠道配置的「消息模板」字段填内联 JSON。
 
-企业微信不支持模板文件，需在渠道配置的「消息模板」字段直接粘内联 JSON：
+**企业微信用 Markdown 显示**：
 
 ```json
 {
@@ -469,14 +454,11 @@ Docker 部署时，需要把 `templates` 目录挂载进容器。在 `docker-com
 }
 ```
 
-同时在企业微信渠道的「消息类型」选 `markdown`。
+同时在企业微信渠道的「消息类型」选 `markdown`。注意这类完全自定义的消息体**不会带事件专属字段**，如需追番总结正文，请把 `{summary_text}` 显式写进 content。
 
-### 示例 2：钉钉加签 + 自定义标题
-
-钉钉的「Secret」字段填加签密钥（机器人安全设置选「加签」时给的那串字符），URL 会自动附加 `timestamp` 和 `sign` 参数。要替换消息文案，在钉钉渠道的「消息模板」字段填内联 JSON（钉钉不支持模板文件）。
+**钉钉加签**：钉钉的「Secret」字段填加签密钥（机器人安全设置选「加签」时给的那串字符），URL 会自动附加 `timestamp` 和 `sign` 参数。
 
 ---
-
 ## 常见问题
 
 ### Q：企业微信 / 钉钉能否用模板文件自定义格式？
@@ -497,11 +479,13 @@ Docker 部署时，需要把 `templates` 目录挂载进容器。在 `docker-com
 
 ### Q：怎么给「追番总结」单独配模板？
 
-`watching_summary_{name}` 是一类动态事件。给这一类事件自定义模板：
+**通常不需要。** 追番总结（`watching_summary_{name}`）用默认模板就能正确发送：Webhook 的 `extra` 里会带总结正文，邮件的正文区也会渲染它，标题里还带任务名。
 
-- **Webhook**：在 `templates/webhook/default.json` 放模板（Webhook 所有事件共用 `default.json`）
-- **邮件**：在 `templates/email/default.html` 放模板（邮件所有事件共用 `default.html`）
-- **企业微信 / 钉钉**：在渠道配置的「消息模板」字段填内联 JSON
+只有在你想换排版时才需要自定义：
+
+- **Webhook**：在 `templates/webhook/default.json` 放模板（Webhook 所有事件共用 `default.json`）。**务必保留 `"extra": "__type_fields__"`**，否则会丢掉总结正文。
+- **邮件**：在 `templates/email/default.html` 放模板（邮件所有事件共用 `default.html`）。**务必保留 `{summary_text}`**。
+- **企业微信 / 钉钉**：在渠道配置的「消息模板」字段填内联 JSON，把 `{summary_text}` 写进 content。
 
 ::: tip Webhook 与邮件当前共用单文件
 当前实现中 Webhook 和邮件各自只有一份 `default.*` 模板，所有事件类型共用。如需按事件类型区分格式，请使用内联 JSON（Webhook / 企业微信 / 钉钉）或修改默认模板文件。
@@ -509,9 +493,9 @@ Docker 部署时，需要把 `templates` 目录挂载进容器。在 `docker-com
 
 ### Q：模板调试有什么技巧？
 
-1. Web 界面的「配置管理 → 通知配置 → 测试」按钮：向指定渠道发一条固定测试事件，模板会按占位符替换。
+1. Web 界面的「配置管理 → 通知配置 → 测试」按钮：向指定渠道发一条固定测试事件，走的是**和线上完全相同**的渲染路径（包括事件专属字段）。
 2. 临时改模板后无需重启程序：通知系统**每次事件都重新读模板**。
-3. Webhook 类渠道的「消息模板」字段可临时粘 JSON 调试，调好后再固化到 `templates/`。
+3. 调试自定义模板时，先用 Webhook 收一份默认模板的实际输出作为对照，再在此基础上改——这样不容易漏掉 `extra`。
 
 ### Q：升级后我的通知内容和以前不一样了？
 
