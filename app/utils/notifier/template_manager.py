@@ -203,22 +203,23 @@ class NotificationTemplateManager:
     def merge_type_fields(self, payload: Any, data: dict[str, Any]) -> Any:
         """把类型特有字段并入已渲染的 payload。
 
-        - 若 payload 内含 ``extra: __type_fields__`` 哨兵，则就地展开到 payload 顶层；
-        - 否则（用户自定义模板未声明 extra）直接补齐到顶层，
+        - 哨兵 ``extra: __type_fields__`` **总是被消费掉**（无论该类型是否有
+          专属字段）：有字段则展开到 payload 顶层，没有则直接移除该键 ——
+          绝不能把 ``"__type_fields__"`` 字面量发给接收端。
+        - 若 payload 未声明哨兵（用户自定义模板漏写 extra），仍补齐到顶层，
           保证类型专属内容不因模板写法而丢失。
 
         非 dict 的 payload 原样返回。
         """
         if not isinstance(payload, dict):
             return payload
-        fields = self.type_fields(data)
-        if not fields:
-            return payload
+        # 先消费哨兵，再决定是否补字段：31 个类型里有 7 个没有专属字段，
+        # 若把删除放在 `if not fields: return` 之后，这些类型会把字面量
+        # "__type_fields__" 原样发出去。
         for key, value in list(payload.items()):
             if value == _TYPE_FIELDS_PLACEHOLDER:
                 del payload[key]
-                break
-        for key, value in fields.items():
+        for key, value in self.type_fields(data).items():
             payload.setdefault(key, value)
         return payload
 
