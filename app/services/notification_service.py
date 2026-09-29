@@ -425,6 +425,16 @@ class NotificationService:
         meta = get_type_meta(notification_type)
         type_data = dict(data)
         type_data.setdefault("notification_type", notification_type)
+        # 集数标签（如 "S01E02" / "剧场版"）：标题模板与站内信标题共用，
+        # 需在渲染 payload_title 之前就位。
+        if not type_data.get("ep_label"):
+            media_type = str(type_data.get("media_type") or "")
+            if media_type == "movie":
+                type_data["ep_label"] = "剧场版"
+            else:
+                season = type_data.get("season") or 0
+                episode = type_data.get("episode") or 0
+                type_data["ep_label"] = f"S{int(season):02d}E{int(episode):02d}"
         if meta:
             type_data.setdefault("type_display_name", meta.display_name)
             type_data.setdefault("type_icon", meta.icon)
@@ -442,18 +452,25 @@ class NotificationService:
             # 规则级模板优先于渠道级
             inline_tpl = (rule_template or channel.config.get("template", "")).strip()
             if inline_tpl:
-                try:
-                    import json
+                import json
 
+                try:
                     obj = json.loads(inline_tpl)
+                except (ValueError, TypeError) as e:
+                    # 只降级「JSON 解析失败」这一种情况：模板语法错误时用内置
+                    # 模板兜底，避免整条通知发不出去。
+                    logger.warning(
+                        f"渠道 {channel.channel_id} 的消息模板不是合法 JSON（{e}），"
+                        "已回退内置模板"
+                    )
+                    payload = self.template_mgr.render_webhook_payload(
+                        type_data, fallback=type_data
+                    )
+                else:
                     payload = self.template_mgr.render_value(obj, type_data)
                     # 用户模板可能整体手写而漏掉类型特有字段（如追番总结的
                     # summary）。此处无条件补齐，避免"模板能发但内容缺失"。
                     payload = self.template_mgr.merge_type_fields(payload, type_data)
-                except Exception:
-                    payload = self.template_mgr.render_webhook_payload(
-                        type_data, fallback=type_data
-                    )
             else:
                 payload = self.template_mgr.render_webhook_payload(
                     type_data, fallback=type_data

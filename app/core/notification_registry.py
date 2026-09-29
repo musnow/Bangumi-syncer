@@ -114,6 +114,7 @@ _TYPES: dict[str, NotificationTypeMeta] = {
         description="媒体库推送的播放事件到达",
         is_item_level=True,
         category="sync_flow",
+        title_template="收到同步请求 - {title} {ep_label}",
     ),
     "bangumi_id_found": NotificationTypeMeta(
         id="bangumi_id_found",
@@ -124,6 +125,7 @@ _TYPES: dict[str, NotificationTypeMeta] = {
         is_item_level=True,
         category="sync_flow",
         payload_fields=(("subject_id", "subject_id"), ("bgm_title", "bgm_title")),
+        title_template="匹配到番剧 - {title}",
     ),
     "mark_success": NotificationTypeMeta(
         id="mark_success",
@@ -139,6 +141,7 @@ _TYPES: dict[str, NotificationTypeMeta] = {
             ("bgm_title", "bgm_title"),
             ("bgm_username", "bgm_username"),
         ),
+        title_template="同步成功 - {title} {ep_label}",
     ),
     "mark_failed": NotificationTypeMeta(
         id="mark_failed",
@@ -154,6 +157,7 @@ _TYPES: dict[str, NotificationTypeMeta] = {
             ("error_type", "error_type"),
             ("additional_info", "additional_info"),
         ),
+        title_template="同步失败 - {title} {ep_label}",
     ),
     "mark_skipped": NotificationTypeMeta(
         id="mark_skipped",
@@ -169,6 +173,7 @@ _TYPES: dict[str, NotificationTypeMeta] = {
             ("bgm_title", "bgm_title"),
             ("bgm_username", "bgm_username"),
         ),
+        title_template="已看过 - {title} {ep_label}",
     ),
     "sync_queued": NotificationTypeMeta(
         id="sync_queued",
@@ -183,6 +188,7 @@ _TYPES: dict[str, NotificationTypeMeta] = {
             ("episode_id", "episode_id"),
             ("bgm_title", "bgm_title"),
         ),
+        title_template="API不可达入队 - {title} {ep_label}",
     ),
     "sync_replayed": NotificationTypeMeta(
         id="sync_replayed",
@@ -197,6 +203,7 @@ _TYPES: dict[str, NotificationTypeMeta] = {
             ("episode_id", "episode_id"),
             ("mark_status", "mark_status"),
         ),
+        title_template="队列补发成功 - {title} {ep_label}",
     ),
     # ═════════════════ 匹配质量 ═════════════════
     "anime_not_found": NotificationTypeMeta(
@@ -209,6 +216,7 @@ _TYPES: dict[str, NotificationTypeMeta] = {
         category="match_quality",
         in_app_type="sync_failed",
         in_app_title_template="同步失败：{title} {ep_label}",
+        title_template="未找到番剧 - {title}",
     ),
     "episode_not_found": NotificationTypeMeta(
         id="episode_not_found",
@@ -220,6 +228,7 @@ _TYPES: dict[str, NotificationTypeMeta] = {
         category="match_quality",
         in_app_type="sync_failed",
         in_app_title_template="同步失败：{title} {ep_label}",
+        title_template="未找到剧集 - {title} {ep_label}",
     ),
     "pending_candidate": NotificationTypeMeta(
         id="pending_candidate",
@@ -234,6 +243,7 @@ _TYPES: dict[str, NotificationTypeMeta] = {
             ("top_candidate_id", "top_candidate_id"),
             ("top_candidate_name", "top_candidate_name"),
         ),
+        title_template="候选待确认 - {title} {ep_label}",
     ),
     "match_ambiguous": NotificationTypeMeta(
         id="match_ambiguous",
@@ -253,6 +263,7 @@ _TYPES: dict[str, NotificationTypeMeta] = {
             ("top2_score", "top2_score"),
             ("score_diff", "score_diff"),
         ),
+        title_template="匹配歧义 - {title} {ep_label}",
     ),
     # ═════════════════ 数据源 ═════════════════
     "source_fetch_failed": NotificationTypeMeta(

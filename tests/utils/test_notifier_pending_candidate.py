@@ -64,8 +64,12 @@ class TestPendingCandidatePayload:
         assert payload["user"] == "tester"
         assert payload["source"] == "plex"
 
-    def test_title_uses_registry_display_name(self):
-        """标题由 NotificationService 依据注册表元数据生成（图标 + 展示名）"""
+    def test_title_carries_anime_and_episode(self):
+        """标题需带番剧与集数，否则同一类型的多条通知无法区分。
+
+        旧实现（html_builders）曾是「候选待确认 - {title} S02E05」，本次
+        重构一度退化为只有「📝 候选待确认」；已由注册表 title_template 恢复。
+        """
         from app.services.notification_service import NotificationService
         from app.utils.notifier.channels_impl import WebhookChannel
 
@@ -76,7 +80,8 @@ class TestPendingCandidatePayload:
         rendered = svc._render_for_channel(
             channel, "pending_candidate", _pending_data()
         )
-        assert rendered["payload"]["title"] == "📝 候选待确认"
+        title = rendered["payload"]["title"]
+        assert title == "📝 候选待确认 - 测试番剧 S02E05"
 
     def test_empty_candidate_fields_are_dropped(self, tmp_path):
         """字段缺失时不输出 0/空串，而是整个键不存在（与旧行为不同）"""

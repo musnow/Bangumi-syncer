@@ -203,8 +203,8 @@ class NotificationTemplateManager:
     def merge_type_fields(self, payload: Any, data: dict[str, Any]) -> Any:
         """把类型特有字段并入已渲染的 payload。
 
-        - 哨兵 ``extra: __type_fields__`` **总是被消费掉**（无论该类型是否有
-          专属字段）：有字段则展开到 payload 顶层，没有则直接移除该键 ——
+        - 哨兵 ``__type_fields__`` **总是被消费掉**（无论该类型是否有专属字段，
+          也无论在顶层还是嵌套位置）：展开到 payload 顶层，或直接移除该键 ——
           绝不能把 ``"__type_fields__"`` 字面量发给接收端。
         - 若 payload 未声明哨兵（用户自定义模板漏写 extra），仍补齐到顶层，
           保证类型专属内容不因模板写法而丢失。
@@ -216,12 +216,23 @@ class NotificationTemplateManager:
         # 先消费哨兵，再决定是否补字段：31 个类型里有 7 个没有专属字段，
         # 若把删除放在 `if not fields: return` 之后，这些类型会把字面量
         # "__type_fields__" 原样发出去。
-        for key, value in list(payload.items()):
-            if value == _TYPE_FIELDS_PLACEHOLDER:
-                del payload[key]
+        # 递归处理：用户可能把哨兵写在嵌套对象/数组里，只查顶层会漏。
+        self._consume_sentinel(payload)
         for key, value in self.type_fields(data).items():
             payload.setdefault(key, value)
         return payload
+
+    @classmethod
+    def _consume_sentinel(cls, node: Any) -> None:
+        """就地移除结构里所有等于哨兵的键（含嵌套 dict / list）。"""
+        if isinstance(node, dict):
+            for key in [k for k, v in node.items() if v == _TYPE_FIELDS_PLACEHOLDER]:
+                del node[key]
+            for value in node.values():
+                cls._consume_sentinel(value)
+        elif isinstance(node, list):
+            for item in node:
+                cls._consume_sentinel(item)
 
     def render_email(
         self, data: dict[str, Any], template_name: str = "default"
