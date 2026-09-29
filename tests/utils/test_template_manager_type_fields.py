@@ -254,3 +254,74 @@ class TestMergeTypeFields:
             payload, {"notification_type": "request_received"}
         )
         assert merged == {"a": 1}
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 用户自定义模板的注入契约（H2）
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class TestUserTemplateInjectionContract:
+    """用户自定义模板是「完全替换」：只有显式写哨兵才注入类型特有字段。
+
+    回归：原先无条件补齐，导致只想发 ``{"msg": "{title}"}`` 的用户被静默
+    塞入 error_type/additional_info 等未声明的键，严格 schema 的接收端会 400。
+    """
+
+    def test_no_sentinel_means_no_injection(self, tmp_path):
+        merged = _manager(tmp_path).merge_type_fields(
+            {"msg": "T"}, _summary_data(), inject_default=False
+        )
+        assert merged == {"msg": "T"}
+        assert "summary" not in merged
+        assert "job_name" not in merged
+
+    def test_explicit_sentinel_triggers_injection(self, tmp_path):
+        merged = _manager(tmp_path).merge_type_fields(
+            {"msg": "T", "extra": "__type_fields__"},
+            _summary_data(),
+            inject_default=False,
+        )
+        assert merged["msg"] == "T"
+        assert merged["summary"] == "本周看了 3 部番，共 12 集。"
+        assert "extra" not in merged
+
+    def test_sentinel_consumed_even_without_injection(self, tmp_path):
+        """声明了哨兵但该类型无专属字段：哨兵仍要被吃掉，不能外发字面量"""
+        merged = _manager(tmp_path).merge_type_fields(
+            {"msg": "T", "extra": "__type_fields__"},
+            {"notification_type": "mark_failed"},
+            inject_default=False,
+        )
+        assert merged == {"msg": "T"}
+
+    def test_default_mode_still_injects(self, tmp_path):
+        """内置默认模板这条路径保持无条件补齐（追番总结的 summary 不能丢）"""
+        merged = _manager(tmp_path).merge_type_fields({"msg": "T"}, _summary_data())
+        assert merged["summary"] == "本周看了 3 部番，共 12 集。"
+
+    def test_nested_sentinel_triggers_injection(self, tmp_path):
+        merged = _manager(tmp_path).merge_type_fields(
+            {"m": {"inner": "__type_fields__"}}, _summary_data(), inject_default=False
+        )
+        assert merged["job_name"] == "每日总结"
+        assert "__type_fields__" not in str(merged)
+
+    def test_deep_and_list_sentinels_never_leak(self, tmp_path):
+        for payload in (
+            {"a": {"b": {"c": "__type_fields__"}}},
+            {"items": [{"extra": "__type_fields__"}]},
+            {"e1": "__type_fields__", "e2": "__type_fields__"},
+        ):
+            merged = _manager(tmp_path).merge_type_fields(
+                payload, _summary_data(), inject_default=False
+            )
+            assert "__type_fields__" not in str(merged)
+
+    def test_user_keys_win_over_injection(self, tmp_path):
+        merged = _manager(tmp_path).merge_type_fields(
+            {"extra": "__type_fields__", "summary": "用户自己的"},
+            _summary_data(),
+            inject_default=False,
+        )
+        assert merged["summary"] == "用户自己的"

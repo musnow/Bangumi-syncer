@@ -200,39 +200,55 @@ class NotificationTemplateManager:
                 out[field_name] = value
         return out
 
-    def merge_type_fields(self, payload: Any, data: dict[str, Any]) -> Any:
-        """把类型特有字段并入已渲染的 payload。
+    def merge_type_fields(
+        self, payload: Any, data: dict[str, Any], inject_default: bool = True
+    ) -> Any:
+        """按模板作者的意愿并入类型特有字段。
 
-        - 哨兵 ``__type_fields__`` **总是被消费掉**（无论该类型是否有专属字段，
-          也无论在顶层还是嵌套位置）：展开到 payload 顶层，或直接移除该键 ——
-          绝不能把 ``"__type_fields__"`` 字面量发给接收端。
-        - 若 payload 未声明哨兵（用户自定义模板漏写 extra），仍补齐到顶层，
-          保证类型专属内容不因模板写法而丢失。
+        契约（用户自定义模板是**完全替换**，不是"默认模板 + 打补丁"）：
+
+        - 模板里写了哨兵 ``__type_fields__`` → 把该类型的专属字段展开到顶层；
+        - 模板里**没写**哨兵 → 视为作者有意自行排版，**不注入**任何字段，
+          只把已写出的内容原样发出（严格 schema 的接收端不会被塞入未知键）；
+        无论哪种情况，哨兵本身（含嵌套位置）都会被消费掉，绝不外发字面量。
+
+        ``inject_default=True``（默认）保留"无条件补齐"的语义，用于内置默认
+        模板这条路径：它按设计就依赖类型特有字段（如追番总结的 ``summary``），
+        故无需哨兵也补齐。用户自定义模板的调用方应传 ``inject_default=False``。
 
         非 dict 的 payload 原样返回。
         """
         if not isinstance(payload, dict):
             return payload
-        # 先消费哨兵，再决定是否补字段：31 个类型里有 7 个没有专属字段，
-        # 若把删除放在 `if not fields: return` 之后，这些类型会把字面量
-        # "__type_fields__" 原样发出去。
-        # 递归处理：用户可能把哨兵写在嵌套对象/数组里，只查顶层会漏。
-        self._consume_sentinel(payload)
+        # 先判断模板是否显式声明了哨兵，再消费掉它：31 个类型里有 7 个没有
+        # 专属字段，若把删除放在"无字段就返回"之后，这些类型会把字面量
+        # "__type_fields__" 原样发出去。递归处理是因为用户可能把哨兵写在
+        # 嵌套对象/数组里，只查顶层会漏。
+        declared = self._consume_sentinel(payload)
+        if not declared and not inject_default:
+            return payload
         for key, value in self.type_fields(data).items():
             payload.setdefault(key, value)
         return payload
 
     @classmethod
-    def _consume_sentinel(cls, node: Any) -> None:
-        """就地移除结构里所有等于哨兵的键（含嵌套 dict / list）。"""
+    def _consume_sentinel(cls, node: Any) -> bool:
+        """就地移除结构里所有等于哨兵的键（含嵌套 dict / list）。
+
+        返回是否至少命中一次 —— 调用方据此判断模板作者是否显式请求了
+        类型特有字段的注入。
+        """
+        found = False
         if isinstance(node, dict):
             for key in [k for k, v in node.items() if v == _TYPE_FIELDS_PLACEHOLDER]:
                 del node[key]
+                found = True
             for value in node.values():
-                cls._consume_sentinel(value)
+                found = cls._consume_sentinel(value) or found
         elif isinstance(node, list):
             for item in node:
-                cls._consume_sentinel(item)
+                found = cls._consume_sentinel(item) or found
+        return found
 
     def render_email(
         self, data: dict[str, Any], template_name: str = "default"

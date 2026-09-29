@@ -570,9 +570,23 @@ async def test_notification(
 
     按渠道类型批量测试已配置的渠道。测试走 :func:`_make_channel_test_fn`
     统一路径（模板经 notification_service 渲染），与线上发送保持一致。
+
+    若同时给了 ``webhook_id`` / ``email_id``，则只测该条渠道 —— 否则会连带
+    触发其它已配置渠道，产生"只想测一条却群发"的副作用。
     """
     try:
         notification_type = request.notification_type or "all"
+
+        # 显式指定了单条渠道：只测它，避免误触发其它线上渠道
+        explicit_id = request.webhook_id or request.email_id
+        if explicit_id is not None:
+            key = "webhook" if request.webhook_id else "email"
+            handler = _CHANNEL_HANDLERS[key]
+            result = await handler.test_fn(explicit_id)
+            return {
+                "status": "success",
+                "data": {f"{key}-{explicit_id}": result},
+            }
 
         # 汇总所有已配置渠道的 id，按渠道类型分组
         config = config_manager.get_config_parser()
