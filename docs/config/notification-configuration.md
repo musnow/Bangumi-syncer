@@ -391,6 +391,21 @@ Docker 部署时，需要把 `templates` 目录挂载进容器。在 `docker-com
 3. 仓库默认目录 `templates/notifications/email/<name>.html`
 4. 代码 fallback（返回 `[Bangumi-Syncer] {payload_title}` 主题 + 空 body）
 
+::: tip 纯文本正文来自同名的 .txt 模板
+邮件是 `multipart/alternative`（HTML + 纯文本双部件）。纯文本部件优先取同名的 `templates/notifications/email/<name>.txt`，这样纯文本阅读时不会有 HTML 模板的缩进空白。你只提供 `.html` 时也能工作——系统会退化为「去标签 + 压缩空白」。
+:::
+
+### 关于变量转义
+
+插入到 HTML 的变量会被**自动转义**（`<` → `&lt;`），因此媒体库文件名、用户名、AI 总结正文里即便含有 `<script>` 或 `<a href=...>` 之类的标记，也只会作为**普通文字**显示，不会被当成 HTML 执行。
+
+这带来两个你需要注意的点：
+
+- 你**不能**靠变量注入 HTML。想在邮件里放自定义标签，请直接写进模板本身（模板结构不转义，只有变量转义）。
+- 邮件**主题**不是 HTML，所以主题里的 `&`、`<` 等字符会正常显示，不会变成 `&amp;`。
+
+纯文本部件（`text/plain`）同样不做转义，保持原文。
+
 ::: tip 永远不会报错
 查找顺序「自定义目录 → 默认目录 → 代码 fallback」保证**永远不会因为模板问题导致通知发不出去**。最多是「自定义模板没生效」——先确认文件名拼写一致，再确认扩展名正确（Webhook 是 `.json`，邮件是 `.html`）。
 :::

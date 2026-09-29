@@ -31,6 +31,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
+from html import escape, unescape
 from pathlib import Path
 from typing import Any
 
@@ -132,6 +133,28 @@ class NotificationTemplateManager:
             return cls.render_string(value, data)
         return value
 
+    @staticmethod
+    def render_html(template: str, data: dict[str, Any]) -> str:
+        """渲染 HTML 模板：``{var}`` 替换前先做 HTML 转义。
+
+        与 :meth:`render_string` 的区别是**值会被转义**。模板里写死的 HTML
+        结构保持原样，只有插入的变量被转义 —— 因此 ``<p>{title}</p>`` 里的
+        标题无法注入标签。
+
+        为什么单独一个方法而不是直接改 ``render_string``：同一套占位符替换
+        还被 webhook（产出 JSON）和站内信（纯文本）复用，在那里做 HTML 转义
+        是错的。转义只属于「输出目标是 HTML」的这一条路径。
+        """
+
+        def _sub(match: re.Match[str]) -> str:
+            key = match.group(1)
+            val = data.get(key, "")
+            if val is None:
+                return ""
+            return escape(str(val))
+
+        return _PLACEHOLDER_RE.sub(_sub, template)
+
     # ── 各渠道便捷渲染 ────────────────────────────────────────────────────
 
     def render_webhook_payload(
@@ -202,15 +225,20 @@ class NotificationTemplateManager:
     def render_email(
         self, data: dict[str, Any], template_name: str = "default"
     ) -> dict[str, str | None]:
-        """渲染邮件，使用 ``email/<template_name>.html`` 模板。
+        """渲染邮件，使用 ``email/<template_name>.html``（可配 ``.txt``）模板。
 
         所有通知类型共用同一套默认邮件模板。subject 从 HTML 的 ``<title>``
         标签提取，body 为纯文本 fallback，html 为渲染后的完整 HTML。
+
+        body 优先取同名的 ``.txt`` 模板（``email/<name>.txt``）——它专门为
+        text/plain 部件排版，不会带上 HTML 模板的缩进空白。若用户只提供
+        了 ``.html``，则退化为「去标签 + 压缩空白」，保证结果可读。
 
         Returns:
             ``{"subject": str, "body": str, "html": str | None}``
         """
         raw_html = self.find_asset("email", template_name, "html")
+        raw_text = self.find_asset("email", template_name, "txt")
 
         # 主题回退：优先用类型标题（如 "📊 追番总结 - 每日总结"），
         # 与 webhook payload 的 title 保持同一来源。
@@ -220,23 +248,84 @@ class NotificationTemplateManager:
         subject_fallback = f"[Bangumi-Syncer] {subject_title}".strip()
 
         if raw_html:
-            rendered_html = self.render_string(raw_html, data)
-            # 从 <title> 标签提取 subject
+            # HTML 部件：变量先转义再插入，避免媒体库文件名/AI 正文里的标记
+            # 被当作 HTML 执行（伪造链接、追踪像素等）。
+            rendered_html = self.render_html(raw_html, data)
+            # 从 <title> 标签提取 subject。HTML 已转义，主题是邮件头（非 HTML
+            # 上下文），需反转义还原出可读文本。
             title_match = re.search(
                 r"<title[^>]*>(.*?)</title>", rendered_html, re.IGNORECASE | re.DOTALL
             )
-            subject = title_match.group(1).strip() if title_match else subject_fallback
-            # body 为去掉 HTML 标签的纯文本（先移除 style/script 块，避免残留 CSS/JS 文本）
-            text_html = re.sub(
-                r"<(style|script)[^>]*>.*?</\1>",
-                "",
-                rendered_html,
-                flags=re.IGNORECASE | re.DOTALL,
+            subject = (
+                unescape(title_match.group(1)).strip()
+                if title_match
+                else subject_fallback
             )
-            body = re.sub(r"<[^>]+>", "", text_html).strip()
+            if raw_text:
+                body = self._collapse_blank_lines(self.render_string(raw_text, data))
+            else:
+                body = self._html_to_text(rendered_html)
             return {"subject": subject, "body": body, "html": rendered_html}
 
+        if raw_text:
+            # 只有纯文本模板：html 留空，由渠道按纯文本发送
+            return {
+                "subject": subject_fallback,
+                "body": self._collapse_blank_lines(self.render_string(raw_text, data)),
+                "html": None,
+            }
+
         return {"subject": subject_fallback, "body": None, "html": None}
+
+    @staticmethod
+    def _collapse_blank_lines(text: str) -> str:
+        """行首尾去空白、连续空行压成一个、去掉首尾空行。
+
+        模板里的可选占位符（如 ``{summary_text}``）没值时会被替换成空串，
+        在文本里留下一串空行；此处统一压掉。
+        """
+        out: list[str] = []
+        for line in text.splitlines():
+            line = line.strip()
+            if line:
+                out.append(line)
+            elif out and out[-1] != "":
+                out.append("")
+        while out and out[-1] == "":
+            out.pop()
+        return "\n".join(out)
+
+    @staticmethod
+    def _html_to_text(rendered_html: str) -> str:
+        """把渲染后的 HTML 转成可读的纯文本（供没有 .txt 模板时兜底）。
+
+        HTML 模板普遍带缩进换行，直接去标签会留下大量空白行。这里按块级标签
+        换行、丢弃纯空白行、并把每行首尾空白去掉。
+        """
+        # 先移除 style/script 块，避免残留 CSS/JS 文本
+        text = re.sub(
+            r"<(style|script)[^>]*>.*?</\1>",
+            "",
+            rendered_html,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        # 块级标签 → 换行，避免相邻文本粘连
+        text = re.sub(
+            r"</?(?:p|div|br|tr|li|h[1-6]|table|tbody|thead)[^>]*>",
+            "\n",
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(r"<[^>]+>", "", text)
+        # 逐行去空白、丢弃空行（保留段落间最多一个空行）
+        lines = [line.strip() for line in text.splitlines()]
+        out: list[str] = []
+        for line in lines:
+            if line:
+                out.append(line)
+            elif out and out[-1] != "":
+                out.append("")
+        return "\n".join(out).strip()
 
     def get_template_content(
         self, channel: str, template_name: str, ext: str
