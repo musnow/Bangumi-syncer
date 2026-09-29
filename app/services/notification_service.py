@@ -428,6 +428,14 @@ class NotificationService:
         if meta:
             type_data.setdefault("type_display_name", meta.display_name)
             type_data.setdefault("type_icon", meta.icon)
+            # 类型标题模板（如 "追番总结 - {job_name}"）；供模板里的 {title}
+            # 以及邮件主题使用，缺失字段降级为空串。
+            rendered_title = self.template_mgr.render_string(
+                meta.default_title(), _SafeFormatDict(type_data)
+            )
+            type_data.setdefault("payload_title", rendered_title)
+        else:
+            type_data.setdefault("payload_title", type_data.get("title", ""))
 
         channel_type = channel.channel_type
         if channel_type == "webhook":

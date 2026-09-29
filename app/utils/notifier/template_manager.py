@@ -212,8 +212,12 @@ class NotificationTemplateManager:
         """
         raw_html = self.find_asset("email", template_name, "html")
 
-        type_display_name = data.get("type_display_name", "")
-        subject_fallback = f"[Bangumi-Syncer] {type_display_name}"
+        # 主题回退：优先用类型标题（如 "📊 追番总结 - 每日总结"），
+        # 与 webhook payload 的 title 保持同一来源。
+        subject_title = str(data.get("payload_title") or "").strip()
+        if not subject_title:
+            subject_title = str(data.get("type_display_name") or "")
+        subject_fallback = f"[Bangumi-Syncer] {subject_title}".strip()
 
         if raw_html:
             rendered_html = self.render_string(raw_html, data)

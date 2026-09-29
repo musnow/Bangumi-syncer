@@ -1,5 +1,5 @@
 {
-  "title": "{type_icon} {type_display_name}",
+  "title": "{payload_title}",
   "type": "{notification_type}",
   "timestamp": "{timestamp}",
   "user": "{user_name}",

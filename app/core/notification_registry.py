@@ -42,12 +42,22 @@ class NotificationTypeMeta:
     # 各渠道实现里。
     payload_fields: tuple[tuple[str, str], ...] = ()
 
+    # 该类型 payload / 邮件主题标题的模板（占位符形如 {job_name}）。
+    # 留空时回退为 "{icon} {display_name}"。需要在标题里区分同一类型的
+    # 多个实例时（如多个追番总结任务），在此声明。
+    title_template: str | None = None
+
     # 是否在配置页类型选择列表中展示（某些内部类型如 sync_queued 也可展示）
     visible_in_ui: bool = True
 
     def default_payload_fields(self) -> dict[str, str]:
         """该类型附加到 webhook payload 的字段（占位符名 → data 键名）。"""
         return dict(self.payload_fields)
+
+    def default_title(self) -> str:
+        """默认标题模板（含图标），用于 webhook payload 的 title 字段。"""
+        tpl = self.title_template or "{type_display_name}"
+        return f"{self.icon} {tpl}"
 
 
 # ── 事件分类 ──────────────────────────────────────────────────────────────
@@ -87,6 +97,8 @@ _WATCHING_SUMMARY_META = NotificationTypeMeta(
         ("model", "model"),
         ("tokens_used", "tokens_used"),
     ),
+    # 同一类型的多个总结任务靠 job_name 区分，必须出现在标题里
+    title_template="追番总结 - {job_name}",
 )
 
 
