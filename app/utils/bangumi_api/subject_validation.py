@@ -142,10 +142,17 @@ def validate_subject_id(subject_id: Any) -> tuple[bool, str]:
     return True, ""
 
 
-def collect_subject_ids(mappings: dict[str, Any]) -> list[str]:
-    """收集一份 mappings 里出现的全部 subject_id（含 segments 内的）。
+def collect_subject_ids(
+    mappings: dict[str, Any], rules: list[Any] | None = None
+) -> list[str]:
+    """收集一份映射配置里出现的全部 subject_id（含 segments 与 rules 内的）。
 
     用于写入前批量校验。返回去重后的字符串 ID 列表（保序）。
+
+    ``rules`` 必须一并传入：正则规则同样由用户填写 subject_id（添加/编辑
+    规则表单、导入的 JSON 都会带），且规则命中的优先级同样很高。遗漏它们
+    会导致「映射里的 ID 校验了、规则里的没校验」，正是这个共享模块要消除的
+    分叉 —— 一本轻小说/音乐条目的 ID 会被原样接受，直到同步时才报错。
     """
     seen: list[str] = []
 
@@ -166,5 +173,9 @@ def collect_subject_ids(mappings: dict[str, Any]) -> list[str]:
                         _add(seg.get("subject_id"))
         else:
             _add(entry)
+
+    for rule in rules or []:
+        if isinstance(rule, dict):
+            _add(rule.get("subject_id"))
 
     return seen

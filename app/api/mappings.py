@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -45,19 +46,32 @@ async def update_custom_mappings(
         if rules is not None and not isinstance(rules, list):
             raise HTTPException(status_code=400, detail="rules 必须是数组")
 
-        # 写入前校验所有 subject_id（含 segments 内的），避免把书籍/音乐/游戏
-        # 条目的 ID 写进映射 —— 那样直到真正同步时才报错，错误信息离病因很远。
-        # 校验对「无可用账号 / 网络异常」降级放行，不会把用户的编辑挡回去。
+        # 写入前校验本次提交的 subject_id（含 segments 与 rules 内的），避免把
+        # 书籍/音乐/游戏条目的 ID 写进映射 —— 那样直到真正同步时才报错，错误
+        # 信息离病因很远。校验对「无可用账号 / 网络异常」降级放行，不会把用户
+        # 的编辑挡回去。
+        #
+        # 只校验**本次提交里出现的** ID，而不是回读整份配置：否则配置文件里
+        # 只要存在一个历史遗留的无效 ID（早于本功能写入、或用户手改/导入带入），
+        # 之后连「删掉那一条」「清空全部」都会被 400 挡住，用户只能去手改文件。
+        #
+        # 校验是阻塞式网络请求，放在线程池里跑：每个 ID 都要新建 API 客户端并
+        # 同步 GET，直接在 async 处理函数里循环会阻塞事件循环。validate_subject_id
+        # 是纯函数（内部只用局部客户端），故并发安全。
         from ..utils.bangumi_api.subject_validation import (
             collect_subject_ids,
             validate_subject_id,
         )
 
+        ids_to_check = collect_subject_ids(mappings, rules)
         invalid: list[str] = []
-        for sid in collect_subject_ids(mappings):
-            ok, reason = validate_subject_id(sid)
-            if not ok:
-                invalid.append(f"{sid}（{reason}）")
+        if ids_to_check:
+            results = await asyncio.gather(
+                *(asyncio.to_thread(validate_subject_id, sid) for sid in ids_to_check)
+            )
+            for sid, (ok, reason) in zip(ids_to_check, results, strict=True):
+                if not ok:
+                    invalid.append(f"{sid}（{reason}）")
         if invalid:
             raise HTTPException(
                 status_code=400,

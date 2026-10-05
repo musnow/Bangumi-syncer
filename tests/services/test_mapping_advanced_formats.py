@@ -33,6 +33,19 @@ def _read(tmp_path):
     return json.loads((tmp_path / "bangumi_mapping.json").read_text(encoding="utf-8"))
 
 
+def _capture_logs() -> list[str]:
+    """注册监听器并返回捕获列表（收集 app 自定义 logger 的输出）。
+
+    项目用的是 app.core.logging.Logger（不是 stdlib logging），pytest 的
+    caplog 抓不到它；它自带 add_listener 回调接口，这里把日志行收进列表。
+    """
+    from app.core.logging import logger
+
+    captured: list[str] = []
+    logger.add_listener(lambda line, _level: captured.append(line))
+    return captured
+
+
 # --------------------------------------------------------------------------
 # 季度感知格式：命中语义与显式标记
 # --------------------------------------------------------------------------
@@ -257,6 +270,84 @@ class TestSegmentMapping:
     def test_empty_episode_returns_empty(self, svc):
         svc._write_config(self.CFG)
         assert svc.find_episode_mapping("JOJO", "", 6, 0) == ("", None, "")
+
+    def test_illegal_segments_type_is_not_explicit(self, svc, caplog):
+        """segments 类型非法（如字符串）不应被判为「显式绑定」
+
+        此前用真值判断 `bool(entry.get("segments"))`：字符串 "oops" 为真 →
+        explicit=True，但 find_episode_mapping 要求 isinstance(list) 会把它
+        整个忽略，于是「宣称显式绑定、实际没有任何段可用」，下游会因此禁止
+        跨季兜底却拿不到任何结果。必须要求非空 list 才算显式。
+        """
+        svc._write_config({"mappings": {"番": {"subject_id": "5", "segments": "oops"}}})
+        _sid, _mtype, _reason, explicit = svc.find_mapping("番", "", 1)
+        assert explicit is False
+        assert svc.get_segments_for("番", "", 1) == []
+
+    def test_inverted_range_warns_and_never_matches(self, svc):
+        """to < from 是反向区间，永远不可能命中，必须告警而不是静默失效
+
+        两个边界是各自独立判断的，不做 lower<=upper 校验时该段会永久失效，
+        再静默回退到顶层 subject_id —— 用户看到的是「配了分段却好像没生效」。
+        """
+        svc._write_config(
+            {
+                "mappings": {
+                    "番": {
+                        "subject_id": "TOP",
+                        "segments": [
+                            {
+                                "season": 1,
+                                "from": 10,
+                                "to": 2,
+                                "subject_id": "SEG",
+                                "offset": 1,
+                            }
+                        ],
+                    }
+                }
+            }
+        )
+        captured = _capture_logs()
+        for ep in (1, 5, 10, 11):
+            assert svc.find_episode_mapping("番", "", 1, ep) == ("", None, "")
+        assert any("区间反向" in m for m in captured), captured
+
+    def test_unparsable_episodes_of_warns_and_falls_back(self, svc):
+        """episodes_of 的值不可解析时应告警并回退 offset，而不是静默忽略
+
+        「键不存在」与「键存在但值非法」都会返回 None。若不区分，一个写错的
+        例外值会悄悄回退成 offset 推算结果 —— 条目是对的、集号是错的，极难发现。
+        """
+        svc._write_config(
+            {
+                "mappings": {
+                    "番": {
+                        "subject_id": "1",
+                        "segments": [
+                            {
+                                "season": 1,
+                                "from": 1,
+                                "to": None,
+                                "subject_id": "2",
+                                "offset": 1,
+                                "episodes_of": {"2": "x", 3: 9},
+                            }
+                        ],
+                    }
+                }
+            }
+        )
+
+        captured = _capture_logs()
+        # 非法值 → 回退 offset（E2→2），并告警
+        assert svc.find_episode_mapping("番", "", 1, 2)[:2] == ("2", 2)
+        assert any("episodes_of" in m for m in captured), captured
+
+        # 合法例外仍然生效（E3→9），且不告警
+        captured.clear()
+        assert svc.find_episode_mapping("番", "", 1, 3)[:2] == ("2", 9)
+        assert not [m for m in captured if "episodes_of" in m], captured
 
 
 class TestRegexRuleSeason:

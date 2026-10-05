@@ -15,8 +15,10 @@ const MappingModal = (function () {
         onSaved: null,
         // 编辑既有映射时，标题下已有的完整配置对象（用于保留 segments 等字段）
         editingEntry: null,
-        // 目标条目章节缓存（自动推算偏移量用），键为 subject_id
-        episodeCache: {},
+        // 打开弹窗时，该条目已有的 segments 条数。用于区分两种「开关是关的」：
+        //   - 本来就没有分段（0）→ 什么都不做
+        //   - 有多条分段、界面无法编辑（>1）→ 必须原样保留，否则会静默清空
+        originalSegmentsCount: 0,
     };
 
     function _val(id) {
@@ -118,10 +120,16 @@ const MappingModal = (function () {
     }
 
     /**
-     * 调后端拉取目标条目的章节列表，按播出日推算该段第 1 集对应的目标集号。
+     * 调后端拉取目标条目的章节列表，推算该段第 1 集对应的目标集号。
      *
-     * 做法：取目标条目中「播出日 ≥ 本段第 1 集的播出日」的第一集，其 sort
-     * 即为该段第 1 集应对应的集号。缺少播出日时退化为 1 并提示用户手改。
+     * 做法：取该条目**首个正片章节的 sort** 作为 offset。理由：典型用法
+     * （TMDB 3 季 vs Bangumi 2 季）中用户选中的正是这一段所属的条目，
+     * 所以「这一段第 1 集」应对齐到该条目的第 1 集；而 sort 不一定从 1 开始
+     * （条目可能含 SP/OP 等非正片章节，或长篇续集 sort 从 99 起），
+     * 因此从返回数据里取，而不是写死 1。
+     *
+     * 注意这是**启发式**，不一定符合所有情况；推算后必须让用户核对预览，
+     * 不对就直接手改「对应该条目的第几集」。
      */
     async function prefillOffset() {
         const sid = _val('seg-subject-id').trim();
@@ -147,12 +155,8 @@ const MappingModal = (function () {
                 showAlert('该条目下没有章节数据，无法自动推算，请手动填写', 'warning');
                 return;
             }
-            _state.episodeCache[sid] = eps;
 
-            // 推算规则：把「本段第 1 集」对齐到目标条目的第一集。
-            // 典型用法（TMDB 3 季 vs Bangumi 2 季）里，用户选中的正是该段的
-            // 起始条目，因此起点的目标集号就是该条目首个正片章节的 sort。
-            // sort 不一定从 1 开始（可能含 SP/OP 等非正片章节），故从数据取。
+            // 把「本段第 1 集」对齐到该条目的首个正片章节
             const firstSort = eps[0].sort;
             _setVal('seg-offset', firstSort);
             updateSegmentPreview();
@@ -208,6 +212,7 @@ const MappingModal = (function () {
         const previewLink = document.getElementById('preview-link');
         if (previewLink) previewLink.classList.add('is-hidden');
         _state.editingEntry = null;
+        _state.originalSegmentsCount = 0;
         _resetSegments();
     }
 
@@ -307,6 +312,7 @@ const MappingModal = (function () {
             const segs = _state.editingEntry && Array.isArray(_state.editingEntry.segments)
                 ? _state.editingEntry.segments
                 : [];
+            _state.originalSegmentsCount = segs.length;
             if (segs.length === 1) {
                 const s = segs[0];
                 document.getElementById('segments-enabled').checked = true;
@@ -429,11 +435,17 @@ const MappingModal = (function () {
                 }
                 if (segEnabled && newSegment) {
                     merged.segments = [newSegment];
-                } else if (!segEnabled && isObj && 'segments' in merged) {
-                    // 用户显式关闭了分段开关 → 移除（多条分段的场景已在
-                    // showEdit 中提示，此处按用户意图清空）
+                } else if (!segEnabled && _state.originalSegmentsCount === 1) {
+                    // 只有「本来就有 1 条分段、用户在界面上把它关掉了」才删除。
+                    //
+                    // 不能只看 `!segEnabled && 'segments' in merged`：多条分段时
+                    // 界面根本无法编辑（showEdit 已提示「保存本表单不会改动
+                    // segments」），开关必然处于关闭状态，照上面那种写法会把这
+                    // 些分段**静默删光**，与该提示自相矛盾。
                     delete merged.segments;
                 }
+                // 其余情况（本来没有分段、或多条分段界面不可编辑）保持 merged
+                // 中的 segments 原样不动。
 
                 // 仅当存在扩展字段时才写对象形式，否则保持简洁的简单格式
                 const hasExtra = Object.keys(merged).some(

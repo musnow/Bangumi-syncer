@@ -1109,6 +1109,7 @@ class SyncService(TaskManagerMixin, RetryMixin, SeasonInfoMixin, TitleNormalizeM
         subject_id: str,
         is_season_matched_id: bool,
         target_episode: int | None = None,
+        mapping_is_explicit: bool = False,
     ) -> tuple[str, str]:
         """根据 media_type 解析 Bangumi 季度与集数 ID。
 
@@ -1117,6 +1118,11 @@ class SyncService(TaskManagerMixin, RetryMixin, SeasonInfoMixin, TitleNormalizeM
         :param target_episode: 集数分段映射算出的**目标条目内集号**。非 None 时
             直接采用它（已由 offset/episodes_of 换算完毕），不再用
             ``item.episode``（那是媒体库集号，两者在有分段时并不相等）。
+        :param mapping_is_explicit: 该请求是否来自**用户显式绑定条目**的自定义
+            映射（季度感知格式 / 带 segments）。为 True 时禁止在条目内找不到
+            该集后沿续集链改选到别的条目 —— 否则用户的明确指定会被程序猜测
+            覆盖，且「改选」发生在这一步（早于 CrossSeasonStep 的守卫），
+            会把 episode 静默标记到另一部番上（issue #267）。
         """
         release_for_ep = None
         if item.release_date and len(item.release_date) >= 8:
@@ -1141,6 +1147,8 @@ class SyncService(TaskManagerMixin, RetryMixin, SeasonInfoMixin, TitleNormalizeM
             target_ep=ep,
             is_season_subject_id=is_season_matched_id,
             release_date=release_for_ep,
+            # 显式映射：条目内找不到就报错，绝不改选
+            allow_chain_fallback=not mapping_is_explicit,
         )
 
     def _format_mark_status_message(self, mark_status: int) -> str:

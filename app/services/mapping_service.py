@@ -129,7 +129,8 @@ class MappingService:
                     raise ValueError("rules 必须是数组")
 
                 # 规范化 rules：仅用于**匹配**，过滤无效条目并预编译正则。
-                # 原始列表另存 _raw_rules 供写回，确保非法规则不被静默删除。
+                # 写回时不使用这份过滤后的列表 —— 写盘路径（update_custom_
+                # mappings）会重新从磁盘读取原始 rules，确保非法规则不被静默删除。
                 normalized_rules: list[dict[str, Any]] = []
                 for rule in rules:
                     if not isinstance(rule, dict):
@@ -179,10 +180,20 @@ class MappingService:
             return self._cached_mappings.copy() if self._cached_mappings else {}
 
     def load_regex_rules(self) -> list[dict[str, Any]]:
-        """加载正则规则列表（与 mappings 同步加载）"""
-        # 确保已加载
-        if not self._cached_mappings and not self._cached_rules:
-            self.load_custom_mappings()
+        """加载正则规则列表（与 mappings 同步加载）
+
+        必须**无条件**调用 ``load_custom_mappings()``：它内部按 mtime 判断是否
+        需要重载，缓存命中时只是一次 stat，开销可忽略。
+
+        此前这里写的是 ``if not self._cached_mappings and not self._cached_rules``，
+        于是「缓存里已有 mappings」时直接返回 ``_cached_rules``，永不重载 ——
+        规则与映射存在同一文件、同一缓存里，但只有映射那一半会被刷新。
+        实际后果：一次同步填充缓存后，用户手改正则规则，再打开映射管理页
+        （``GET /api/mappings`` → ``get_all_rules()``）看到的仍是**旧规则**，
+        而同步路径（先走 ``find_mapping``）用的却是新规则 —— 界面与实际行为
+        不一致，且此时保存会把旧规则写回，等于撤销用户的修改。
+        """
+        self.load_custom_mappings()
         return list(self._cached_rules)
 
     def find_mapping(
@@ -205,9 +216,13 @@ class MappingService:
         mappings = self.load_custom_mappings()
 
         # 1. 季度感知精确匹配（优先尝试标题与原始标题）
+        # 标题与原始标题常指向同一条目，用 seen 避免同一条配置被反复处理
+        # （否则下面的「season 不可解析」警告会在每次查询里重复打印两遍）。
+        seen_titles: set[str] = set()
         for candidate_title in (title, ori_title):
-            if not candidate_title:
+            if not candidate_title or candidate_title in seen_titles:
                 continue
+            seen_titles.add(candidate_title)
             entry = mappings.get(candidate_title)
             if not isinstance(entry, dict):
                 continue
@@ -226,8 +241,13 @@ class MappingService:
                 reason = f"季度感知映射命中：{candidate_title}={entry_sid}"
                 if entry_season is not None:
                     reason += f"（season={entry_season}）"
-                # 声明了 season 或携带 segments = 用户显式指定了条目结构
-                explicit = entry_season is not None or bool(entry.get("segments"))
+                # 声明了 season 或携带 segments = 用户显式指定了条目结构。
+                # segments 必须是**非空 list** 才算数：若写成字符串等非法类型，
+                # find_episode_mapping 会忽略它（要求 isinstance list），
+                # 这里若用真值判断就会得出「显式」而实际无任何段可用。
+                segs = entry.get("segments")
+                has_segments = isinstance(segs, list) and bool(segs)
+                explicit = entry_season is not None or has_segments
                 return entry_sid, "season", reason, explicit
 
         # 2. 简单格式精确匹配（向后兼容）
@@ -353,6 +373,17 @@ class MappingService:
 
                 lower = self._parse_season(seg.get("from"))
                 upper = self._parse_season(seg.get("to"))
+
+                # 反向区间（to < from）永远不可能被满足，是个纯手滑。若不显式
+                # 报出来，这段会永久失效且静默回退到顶层 subject_id —— 用户
+                # 看到的是「配了分段但好像没生效」，极难自查。
+                if lower is not None and upper is not None and upper < lower:
+                    logger.warning(
+                        f"集数分段映射区间反向（{candidate_title}：from={lower} "
+                        f"> to={upper}），该段永远不会命中，请检查配置"
+                    )
+                    continue
+
                 if lower is not None and episode < lower:
                     continue
                 if upper is not None and episode > upper:
@@ -396,12 +427,23 @@ class MappingService:
 
         键兼容 int 与 str 两种写法（JSON 里键必然是字符串，但用户手写时
         可能写成数字，两处都要认）。
+
+        返回 ``None`` 表示「没有可用的例外」，调用方据此回退到 offset 计算。
+        注意「键不存在」与「键存在但值不可解析」都会返回 None —— 后者会
+        ``logger.warning`` 提示，否则一个写错的例外值会被静默忽略并悄悄
+        回退成 offset 推算结果（可能指向错误的一集，但条目是对的，极难发现）。
         """
         if not isinstance(raw, dict):
             return None
         for key in (episode, str(episode)):
             if key in raw:
-                return MappingService._parse_season(raw[key])
+                parsed = MappingService._parse_season(raw[key])
+                if parsed is None:
+                    logger.warning(
+                        f"集数分段映射的 episodes_of 中，第 {episode} 集对应的值 "
+                        f"{raw[key]!r} 不是正整数，已忽略该例外并回退到 offset 推算"
+                    )
+                return parsed
         return None
 
     def get_segments_for(

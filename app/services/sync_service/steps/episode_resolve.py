@@ -36,6 +36,10 @@ class EpisodeResolveStep(ExecutionStepBase):
                 ctx.subject_id,
                 ctx.is_season_matched_id,
                 target_episode=target_ep,
+                # 显式绑定：条目内找不到该集时报错，不得沿续集链改选其它条目。
+                # 改选恰恰发生在本步内部（get_target_season_episode_id 的回退），
+                # 早于 CrossSeasonStep 的守卫，因此必须在这里就禁掉。
+                mapping_is_explicit=ctx.mapping_is_explicit,
             )
         except ValueError as ve:
             if "认证失败" in str(ve) or "access_token" in str(ve):

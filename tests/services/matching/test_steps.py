@@ -159,9 +159,13 @@ class TestCustomMappingStep:
         assert outcome.outputs["target_episode"] == "2"
 
     def test_segment_miss_but_entry_has_segments_still_explicit(self):
-        """段未覆盖该集但条目声明了 segments 时，仍属显式绑定
+        """段未覆盖该集、回退顶层 subject_id 时，仍属显式绑定
 
-        此时回退顶层 subject_id，但不应再走沿续集链猜的老路。
+        此时不应再走沿续集链猜的老路。关键是 ``explicit`` 只能有一个判定来源：
+        ``find_mapping`` 在条目携带非空 segments 时**已经**返回 True（它同时
+        是 fallback subject_id 的提供者），因此这里直接采信它的返回值即可，
+        不需要再用 get_segments_for 去 OR 一遍（那是重复读盘，且掩盖了
+        「判定来源唯一」这一点）。
         """
         ctx = _build_ctx(title="JOJO", season=6, episode=99)
         with (
@@ -171,11 +175,8 @@ class TestCustomMappingStep:
             ),
             patch(
                 "app.services.mapping_service.mapping_service.find_mapping",
-                return_value=("43558", "season", "命中主条目", False),
-            ),
-            patch(
-                "app.services.mapping_service.mapping_service.get_segments_for",
-                return_value=[{"season": 6, "from": 1, "to": 2}],
+                # 与生产一致：带 segments 的条目由 find_mapping 报 explicit=True
+                return_value=("43558", "season", "命中主条目", True),
             ),
         ):
             outcome = CustomMappingStep().execute(ctx)
@@ -183,6 +184,28 @@ class TestCustomMappingStep:
         assert outcome.status == "hit"
         assert ctx.subject_id == "43558"
         assert ctx.mapping_is_explicit is True
+
+    def test_simple_string_entry_is_not_explicit(self):
+        """简单字符串映射（无 season / 无 segments）不是显式绑定
+
+        保持历史语义：填主条目、由程序沿续集链往后找。
+        """
+        ctx = _build_ctx(title="JOJO", season=6, episode=3)
+        with (
+            patch(
+                "app.services.mapping_service.mapping_service.find_episode_mapping",
+                return_value=("", None, ""),
+            ),
+            patch(
+                "app.services.mapping_service.mapping_service.find_mapping",
+                return_value=("43558", "exact", "自定义映射命中", False),
+            ),
+        ):
+            outcome = CustomMappingStep().execute(ctx)
+
+        assert outcome.status == "hit"
+        assert ctx.subject_id == "43558"
+        assert ctx.mapping_is_explicit is False
 
 
 class TestBangumiDataStep:

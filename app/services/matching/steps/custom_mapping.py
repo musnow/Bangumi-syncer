@@ -74,16 +74,15 @@ class CustomMappingStep(MatchStepBase):
         )
 
         if mapping_subject_id:
-            # 段未覆盖该集时，若条目带 segments，仍属显式绑定（用户指定了条目）。
-            explicit = is_explicit or bool(
-                mapping_service.get_segments_for(title, ori_title, item.season)
-            )
+            # is_explicit 已由 find_mapping 判定完毕（声明了 season，或条目携带
+            # 非空的 segments）。此处无需再 OR 一次 get_segments_for：那既重复
+            # 读一遍配置，又掩盖了「explicit 的判定只应有一个来源」这件事。
             return self._hit(
                 ctx,
                 subject_id=mapping_subject_id,
                 reason=match_reason,
                 match_method=match_type or "",
-                is_explicit=explicit,
+                is_explicit=is_explicit,
                 inputs=mapping_inputs,
             )
 

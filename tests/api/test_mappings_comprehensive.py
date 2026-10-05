@@ -236,6 +236,144 @@ async def test_update_validates_segment_subject_ids(app_with_auth):
 
 
 @pytest.mark.asyncio
+async def test_update_validates_rule_subject_ids(app_with_auth):
+    """正则规则里的 subject_id 同样要校验（与 mappings 一条不漏）
+
+    原实现只收集 mappings（含 segments），rules 整个被漏掉：用户在「添加正则
+    规则」表单里填一本轻小说/音乐条目的 ID 会被原样接受，直到同步时才报错。
+    """
+    seen: list[str] = []
+
+    def _validate(sid):
+        seen.append(str(sid))
+        return (True, "")
+
+    with (
+        patch("app.api.mappings.mapping_service"),
+        patch(
+            "app.utils.bangumi_api.subject_validation.validate_subject_id",
+            side_effect=_validate,
+        ),
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=app_with_auth), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/mappings",
+                json={
+                    "mappings": {},
+                    "rules": [
+                        {"pattern": "^某番.*", "subject_id": "111"},
+                        {"pattern": "^另一番$", "subject_id": "222", "season": 2},
+                    ],
+                },
+            )
+
+        assert response.status_code == 200
+        assert "111" in seen
+        assert "222" in seen
+
+
+@pytest.mark.asyncio
+async def test_update_rejects_invalid_rule_subject_id(app_with_auth):
+    """规则里的非法 ID 也要挡住写入"""
+    with (
+        patch("app.api.mappings.mapping_service") as mock_service,
+        patch(
+            "app.utils.bangumi_api.subject_validation.validate_subject_id",
+            return_value=(False, "条目类型为 1，仅支持动画/三次元"),
+        ),
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=app_with_auth), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/mappings",
+                json={
+                    "mappings": {},
+                    "rules": [{"pattern": "^某番$", "subject_id": "999"}],
+                },
+            )
+
+        assert response.status_code == 400
+        assert "999" in response.json()["detail"]
+        mock_service.update_custom_mappings.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_only_submitted_ids_are_validated(app_with_auth):
+    """只校验本次提交里出现的 ID，不回读整份配置
+
+    否则配置文件里只要有一个历史遗留的无效 ID，之后连「删掉那一条」「清空
+    全部」都会被 400 挡住，用户只能去手改文件才能恢复。
+    """
+    seen: list[str] = []
+
+    def _validate(sid):
+        seen.append(str(sid))
+        # 模拟「旧配置里那个 ID 已失效」
+        if str(sid) == "LEGACY_BAD":
+            return (False, "条目不存在或 API 返回空")
+        return (True, "")
+
+    with (
+        patch("app.api.mappings.mapping_service"),
+        patch(
+            "app.utils.bangumi_api.subject_validation.validate_subject_id",
+            side_effect=_validate,
+        ),
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=app_with_auth), base_url="http://test"
+        ) as client:
+            # 提交的内容里没有那个坏 ID —— 应放行
+            response = await client.post(
+                "/api/mappings", json={"mappings": {"好番": "12345"}}
+            )
+
+        assert response.status_code == 200, response.text
+        assert "LEGACY_BAD" not in seen
+        assert "12345" in seen
+
+
+@pytest.mark.asyncio
+async def test_validation_does_not_block_event_loop(app_with_auth):
+    """校验必须在工作线程里跑：validate_subject_id 是阻塞式网络调用
+
+    直接在 async 处理函数里循环调用会卡住事件循环（100 条映射 = 100 次串行
+    阻塞 HTTP）。这里断言它被切到线程执行，而不是在主线程内联调用。
+    """
+    import threading
+
+    main_thread = threading.current_thread().ident
+    called_from: list[int | None] = []
+
+    def _validate(sid):
+        called_from.append(threading.current_thread().ident)
+        return (True, "")
+
+    with (
+        patch("app.api.mappings.mapping_service"),
+        patch(
+            "app.utils.bangumi_api.subject_validation.validate_subject_id",
+            side_effect=_validate,
+        ),
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=app_with_auth), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/mappings", json={"mappings": {"番": "12345"}}
+            )
+
+        assert response.status_code == 200
+        assert called_from, "校验函数没有被调用"
+        assert all(tid != main_thread for tid in called_from), (
+            "校验在主线程（事件循环）里执行，会阻塞其它请求"
+        )
+
+
+@pytest.mark.asyncio
 async def test_update_tolerates_validation_downgrade(app_with_auth):
     """校验因无账号/网络异常降级放行时，写入仍应成功
 
