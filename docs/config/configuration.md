@@ -388,4 +388,4 @@ Web 界面背后对应一个 `config.ini` 文件（INI 格式），首次运行�
 - [自定义 Webhook](/usage/custom-webhook)
 - [Trakt.tv 定时同步](/usage/trakt) / [飞牛定时同步](/usage/feiniu) / [fongmi 局域网同步](/usage/fongmi)
 
-标题对不上 Bangumi 条目时，可使用 [自定义映射](/mapping) 手动指定。
+标题对不上 Bangumi 条目时，可使用 [自定义映射](/mapping/) 手动指定。
