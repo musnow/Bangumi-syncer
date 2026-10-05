@@ -259,6 +259,68 @@ class TestSegmentMapping:
         assert svc.find_episode_mapping("JOJO", "", 6, 0) == ("", None, "")
 
 
+class TestRegexRuleSeason:
+    """正则规则的 season 限定
+
+    原实现完全忽略 rules 里的 season 字段：用户对「同名不同季」的番剧写了
+    season 也不报错、只是静默失效 —— 属于最难排查的一类问题。
+    """
+
+    CFG = {
+        "mappings": {},
+        "rules": [
+            {
+                "pattern": "^某番剧$",
+                "subject_id": "200",
+                "season": 2,
+                "description": "仅第 2 季",
+            },
+            {"pattern": "^某番剧$", "subject_id": "100", "description": "兜底"},
+        ],
+    }
+
+    def test_season_matches(self, svc):
+        svc._write_config(self.CFG)
+        sid, mtype, reason, _ = svc.find_mapping("某番剧", "", 2)
+        assert (sid, mtype) == ("200", "regex")
+        assert "season=2" in reason
+
+    def test_season_mismatch_skips_to_next_rule(self, svc):
+        """season 不符时跳过该规则，落到后续没有 season 的规则"""
+        svc._write_config(self.CFG)
+        sid, mtype, _reason, _ = svc.find_mapping("某番剧", "", 1)
+        assert (sid, mtype) == ("100", "regex")
+
+    def test_season_omitted_matches_any_season(self, svc):
+        """省略 season 的规则对所有季生效（向后兼容）"""
+        svc._write_config(
+            {"mappings": {}, "rules": [{"pattern": "^番$", "subject_id": "7"}]}
+        )
+        for season in (1, 2, 5):
+            sid, _, _, _ = svc.find_mapping("番", "", season)
+            assert sid == "7"
+
+    def test_unparsable_season_ignored_with_warning(self, svc):
+        """season 不可解析时忽略该条件（而非抛异常炸穿匹配管线）"""
+        svc._write_config(
+            {
+                "mappings": {},
+                "rules": [
+                    {"pattern": "^番$", "subject_id": "7", "season": "S2"},
+                ],
+            }
+        )
+        sid, _, _, _ = svc.find_mapping("番", "", 1)
+        assert sid == "7"
+
+    def test_rule_season_survives_round_trip(self, svc, tmp_path):
+        """写回时不得丢掉规则上的 season 字段"""
+        svc._write_config(self.CFG)
+        assert svc.update_custom_mappings(svc.get_all_mappings()) is True
+        rules = _read(tmp_path)["rules"]
+        assert any(r.get("season") == 2 for r in rules)
+
+
 # --------------------------------------------------------------------------
 # 写回安全：不得静默丢数据
 # --------------------------------------------------------------------------

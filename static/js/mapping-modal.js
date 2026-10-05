@@ -274,6 +274,8 @@ const MappingModal = (function () {
             document.getElementById('rule-pattern').value = rule.pattern || '';
             document.getElementById('mapping-id').value = rule.subject_id || '';
             document.getElementById('rule-desc').value = rule.description || '';
+            document.getElementById('rule-season').value =
+                rule.season === undefined || rule.season === null ? '' : rule.season;
             _state.editingType = 'regex';
             _state.editingTitle = null;
             _state.editingRuleIndex = idx;
@@ -475,6 +477,17 @@ const MappingModal = (function () {
             let newRules = [..._state.currentRules];
             const newRule = { pattern: pattern, subject_id: id };
             if (desc) newRule.description = desc;
+
+            // 限定季度（可选）：同名番剧多季且各季是不同条目时用
+            const seasonRaw = document.getElementById('rule-season').value.trim();
+            if (seasonRaw) {
+                const ruleSeason = parseInt(seasonRaw, 10);
+                if (!ruleSeason || ruleSeason < 1) {
+                    showAlert('限定季度必须为正整数（或留空表示对所有季生效）', 'warning');
+                    return;
+                }
+                newRule.season = ruleSeason;
+            }
 
             if (_state.editingType === 'regex' && _state.editingRuleIndex !== null) {
                 newRules[_state.editingRuleIndex] = newRule;

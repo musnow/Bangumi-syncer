@@ -73,12 +73,19 @@ class MappingService:
                         "魔王学院的不适任者": "292222",
                         "我推的孩子": "386809",
                     },
+                    "_rules_format": "rules 每项：{'pattern': '正则', 'subject_id': 'id', 'season': 1, 'description': '说明'}；season 可省略（表示所有季）",
                     "_rules_example": [
                         {
                             "pattern": "^.*之.*刃$",
                             "subject_id": "123456",
                             "description": "示例：匹配标题以「之刃」结尾的番剧",
-                        }
+                        },
+                        {
+                            "pattern": "^某番剧$",
+                            "subject_id": "789012",
+                            "season": 2,
+                            "description": "示例：仅第 2 季命中该规则",
+                        },
                     ],
                     "mappings": {"假面骑士加布": "502002"},
                     "rules": [],
@@ -245,10 +252,25 @@ class MappingService:
                 subject_id = str(rule.get("subject_id", ""))
                 if not pattern or not subject_id:
                     continue
+
+                # season 限定（可选）：与高级格式映射一致，声明了就只在该季生效。
+                # 原实现忽略该字段，导致用户对「同名不同季」的番剧无法用规则区分，
+                # 且写了 season 也不报错、静默失效（最难排查的一类）。
+                rule_season = self._parse_season(rule.get("season"))
+                if rule.get("season") is not None and rule_season is None:
+                    logger.warning(
+                        f"正则规则 /{pattern}/ 的 season 值无法解析"
+                        f"（{rule.get('season')!r}），已忽略该季条件"
+                    )
+                if rule_season is not None and rule_season != season:
+                    continue
+
                 try:
                     if re.search(pattern, candidate_title, timeout=_REGEX_TIMEOUT):
                         desc = rule.get("description", "")
                         reason = f"正则规则命中：/{pattern}/ → {subject_id}"
+                        if rule_season is not None:
+                            reason += f"（season={rule_season}）"
                         if desc:
                             reason += f"（{desc}）"
                         return subject_id, "regex", reason, False
