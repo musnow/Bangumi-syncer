@@ -45,6 +45,25 @@ async def update_custom_mappings(
         if rules is not None and not isinstance(rules, list):
             raise HTTPException(status_code=400, detail="rules 必须是数组")
 
+        # 写入前校验所有 subject_id（含 segments 内的），避免把书籍/音乐/游戏
+        # 条目的 ID 写进映射 —— 那样直到真正同步时才报错，错误信息离病因很远。
+        # 校验对「无可用账号 / 网络异常」降级放行，不会把用户的编辑挡回去。
+        from ..utils.bangumi_api.subject_validation import (
+            collect_subject_ids,
+            validate_subject_id,
+        )
+
+        invalid: list[str] = []
+        for sid in collect_subject_ids(mappings):
+            ok, reason = validate_subject_id(sid)
+            if not ok:
+                invalid.append(f"{sid}（{reason}）")
+        if invalid:
+            raise HTTPException(
+                status_code=400,
+                detail="以下 Bangumi ID 校验失败，未写入：" + "；".join(invalid),
+            )
+
         # 更新映射（rules=None 时保留现有）。
         # 必须检查返回值：写盘失败（权限、磁盘满）或配置文件损坏被拒绝写入时
         # 返回 False，此时若照旧回 success，前端会显示「保存成功」而改动其实

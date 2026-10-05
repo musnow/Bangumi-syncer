@@ -65,7 +65,7 @@ async def test_update_custom_mappings(app_with_auth):
             transport=ASGITransport(app=app_with_auth), base_url="http://test"
         ) as client:
             response = await client.post(
-                "/api/mappings", json={"mappings": {"test": "value"}}
+                "/api/mappings", json={"mappings": {"test": "386809"}}
             )
 
             assert response.status_code == 200
@@ -83,7 +83,7 @@ async def test_update_custom_mappings_exception(app_with_auth):
             transport=ASGITransport(app=app_with_auth), base_url="http://test"
         ) as client:
             response = await client.post(
-                "/api/mappings", json={"mappings": {"test": "value"}}
+                "/api/mappings", json={"mappings": {"test": "386809"}}
             )
 
             assert response.status_code == 500
@@ -148,7 +148,7 @@ async def test_update_custom_mappings_write_failure_returns_500(app_with_auth):
             transport=ASGITransport(app=app_with_auth), base_url="http://test"
         ) as client:
             response = await client.post(
-                "/api/mappings", json={"mappings": {"test": "value"}}
+                "/api/mappings", json={"mappings": {"test": "386809"}}
             )
 
         assert response.status_code == 500
@@ -168,6 +168,95 @@ async def test_update_custom_mappings_rejects_bad_types(app_with_auth):
             "/api/mappings", json={"mappings": {}, "rules": "oops"}
         )
         assert bad_rules.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_update_rejects_invalid_subject_id(app_with_auth):
+    """写入前必须校验 subject_id，拒绝非动画/三次元条目
+
+    原实现只在「确认待确认候选」路径校验，映射页手动写入不校验 —— 用户可
+    写入书籍/音乐条目的 ID，直到真正同步时才失败，错误信息离病因很远。
+    """
+    with (
+        patch("app.api.mappings.mapping_service") as mock_service,
+        patch(
+            "app.utils.bangumi_api.subject_validation.validate_subject_id",
+            return_value=(False, "条目类型为 1，仅支持动画/三次元"),
+        ),
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=app_with_auth), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/mappings", json={"mappings": {"某番": "12345"}}
+            )
+
+        assert response.status_code == 400
+        assert "校验失败" in response.json()["detail"]
+        # 校验失败时绝不能落盘
+        mock_service.update_custom_mappings.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_validates_segment_subject_ids(app_with_auth):
+    """segments 内的 subject_id 同样要校验（否则是绕过校验的后门）"""
+    seen: list[str] = []
+
+    def _validate(sid):
+        seen.append(str(sid))
+        return (True, "")
+
+    with (
+        patch("app.api.mappings.mapping_service"),
+        patch(
+            "app.utils.bangumi_api.subject_validation.validate_subject_id",
+            side_effect=_validate,
+        ),
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=app_with_auth), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/mappings",
+                json={
+                    "mappings": {
+                        "JOJO": {
+                            "subject_id": "43558",
+                            "segments": [
+                                {"season": 6, "from": 3, "subject_id": "639938"}
+                            ],
+                        }
+                    }
+                },
+            )
+
+        assert response.status_code == 200
+        assert "43558" in seen
+        assert "639938" in seen
+
+
+@pytest.mark.asyncio
+async def test_update_tolerates_validation_downgrade(app_with_auth):
+    """校验因无账号/网络异常降级放行时，写入仍应成功
+
+    校验不应成为阻塞用户编辑的环节（降级放行是既有约定）。
+    """
+    with (
+        patch("app.api.mappings.mapping_service") as mock_service,
+        patch(
+            "app.utils.bangumi_api.subject_validation.validate_subject_id",
+            return_value=(True, ""),
+        ),
+    ):
+        mock_service.update_custom_mappings.return_value = True
+        async with AsyncClient(
+            transport=ASGITransport(app=app_with_auth), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/mappings", json={"mappings": {"某番": "12345"}}
+            )
+
+        assert response.status_code == 200
 
 
 # --------------------------------------------------------------------------
