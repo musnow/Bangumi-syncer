@@ -64,6 +64,60 @@ async def update_custom_mappings(
         raise HTTPException(status_code=500, detail=f"更新自定义映射失败: {str(e)}")
 
 
+@router.get("/mappings/subject/{subject_id}/episodes")
+async def get_subject_episodes(
+    subject_id: int,
+    current_user: dict = Depends(get_current_user_flexible),
+) -> dict[str, Any]:
+    """返回条目的章节列表，供映射弹窗「集数分段」自动推算偏移量。
+
+    只返回正片章节（type=0）的序号与标题。前端用它在用户选定目标条目后，
+    按播出日/集号推算「该段第 1 集对应该条目的第几集」，避免用户手算。
+    """
+    if subject_id < 1:
+        raise HTTPException(status_code=400, detail="无效的条目 ID")
+
+    from ..utils.bangumi_api.factory import build_bangumi_api_from_primary_config
+
+    api = build_bangumi_api_from_primary_config()
+    if api is None:
+        raise HTTPException(status_code=400, detail="未配置可用的 Bangumi 账号")
+
+    try:
+        data = api.get_episodes(subject_id, 0, fetch_all=True)
+        rows = data.get("data") if isinstance(data, dict) else data
+        eps: list[dict[str, Any]] = []
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            sort = row.get("sort")
+            if sort is None:
+                continue
+            eps.append(
+                {
+                    "sort": sort,
+                    "name": row.get("name") or "",
+                    "name_cn": row.get("name_cn") or "",
+                    "airdate": row.get("airdate") or "",
+                }
+            )
+        return {
+            "status": "success",
+            "total": len(eps),
+            "episodes": eps,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取条目 {subject_id} 章节列表失败: {e}")
+        raise HTTPException(status_code=502, detail=f"获取章节列表失败: {str(e)}")
+    finally:
+        try:
+            api.close()
+        except Exception:  # noqa: BLE001 — 关闭失败不影响响应
+            pass
+
+
 @router.delete("/mappings/{title}")
 async def delete_custom_mapping(
     title: str,

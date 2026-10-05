@@ -13,7 +13,172 @@ const MappingModal = (function () {
         editingTitle: null,
         editingRuleIndex: null,
         onSaved: null,
+        // 编辑既有映射时，标题下已有的完整配置对象（用于保留 segments 等字段）
+        editingEntry: null,
+        // 目标条目章节缓存（自动推算偏移量用），键为 subject_id
+        episodeCache: {},
     };
+
+    function _val(id) {
+        const el = document.getElementById(id);
+        return el ? el.value : '';
+    }
+
+    function _setVal(id, v) {
+        const el = document.getElementById(id);
+        if (el) el.value = v;
+    }
+
+    // ---------------------------------------------------------------
+    // 集数分段：场景选择 → 生成 segments
+    //
+    // segments 中 from/to 用的是**媒体库该季的实际集号**（即 Emby 的
+    // ParentIndexNumber / IndexNumber 原样带来的值），offset 是该段第 1 集
+    // 对应的目标条目集号。
+    // ---------------------------------------------------------------
+
+    function toggleSegments(enabled) {
+        const body = document.getElementById('segments-body');
+        if (body) body.classList.toggle('is-hidden', !enabled);
+        if (enabled) {
+            onSegmentModeChange();
+        } else {
+            const preview = document.getElementById('segment-preview');
+            if (preview) preview.innerHTML = '';
+        }
+    }
+
+    function onSegmentModeChange() {
+        const mode = _val('segment-mode');
+        const toWrap = document.getElementById('seg-to-wrap');
+        const fromWrap = document.getElementById('seg-from-wrap');
+        if (toWrap) toWrap.classList.toggle('is-hidden', mode !== 'range');
+        if (fromWrap) fromWrap.classList.toggle('is-hidden', mode === 'whole');
+        if (mode === 'whole') {
+            _setVal('seg-from', 1);
+        }
+        updateSegmentPreview();
+    }
+
+    /** 由当前表单生成一个 segment 对象；输入非法时返回 null */
+    function buildSegment() {
+        const sid = _val('seg-subject-id').trim();
+        if (!sid || !/^\d+$/.test(sid)) return null;
+
+        const mode = _val('segment-mode');
+        const fromRaw = _val('seg-from').trim();
+        const toRaw = _val('seg-to').trim();
+        const offRaw = _val('seg-offset').trim();
+
+        const from = mode === 'whole' ? 1 : parseInt(fromRaw, 10);
+        if (!from || from < 1) return null;
+
+        let to = null;
+        if (mode === 'range') {
+            if (!toRaw) return null;
+            to = parseInt(toRaw, 10);
+            if (!to || to < from) return null;
+        }
+
+        const offset = offRaw ? parseInt(offRaw, 10) : 1;
+        if (!offset || offset < 1) return null;
+
+        const seg = { from: from, to: to, subject_id: sid, offset: offset };
+        // season 取上方「季度」输入；为空则不写（对该标题所有季生效）
+        const seasonRaw = _val('mapping-season').trim();
+        if (seasonRaw) {
+            const season = parseInt(seasonRaw, 10);
+            if (season > 0) seg.season = season;
+        }
+        return seg;
+    }
+
+    function updateSegmentPreview() {
+        const preview = document.getElementById('segment-preview');
+        if (!preview) return;
+        if (!document.getElementById('segments-enabled')?.checked) {
+            preview.innerHTML = '';
+            return;
+        }
+        const seg = buildSegment();
+        if (!seg) {
+            preview.innerHTML =
+                '<span class="text-danger">请填写完整且合法的分段信息（集号与条目 ID 均为正整数）</span>';
+            return;
+        }
+        const seasonText = seg.season ? `S${seg.season} ` : '';
+        const span = seg.to === null ? `E${seg.from} 起` : `E${seg.from}–E${seg.to}`;
+        const first = seg.offset;
+        const second = seg.offset + 1;
+        preview.innerHTML =
+            `<span class="text-success">` +
+            `媒体库 ${seasonText}${span} → 条目 <a href="https://bgm.tv/subject/${seg.subject_id}" target="_blank">${seg.subject_id}</a>` +
+            `（E${seg.from}→该条目 E${first}，E${seg.from + 1}→E${second}，依次类推）` +
+            `</span>`;
+    }
+
+    /**
+     * 调后端拉取目标条目的章节列表，按播出日推算该段第 1 集对应的目标集号。
+     *
+     * 做法：取目标条目中「播出日 ≥ 本段第 1 集的播出日」的第一集，其 sort
+     * 即为该段第 1 集应对应的集号。缺少播出日时退化为 1 并提示用户手改。
+     */
+    async function prefillOffset() {
+        const sid = _val('seg-subject-id').trim();
+        if (!sid || !/^\d+$/.test(sid)) {
+            showAlert('请先填写目标 Bangumi 条目 ID', 'warning');
+            return;
+        }
+        const mode = _val('segment-mode');
+        const from = mode === 'whole' ? 1 : parseInt(_val('seg-from').trim(), 10);
+        if (!from || from < 1) {
+            showAlert('请先填写有效的起始集号', 'warning');
+            return;
+        }
+
+        try {
+            const resp = await apiFetch(`/api/mappings/subject/${sid}/episodes`);
+            if (resp.status !== 'success' || !Array.isArray(resp.episodes)) {
+                showAlert('获取章节列表失败', 'danger');
+                return;
+            }
+            const eps = resp.episodes;
+            if (eps.length === 0) {
+                showAlert('该条目下没有章节数据，无法自动推算，请手动填写', 'warning');
+                return;
+            }
+            _state.episodeCache[sid] = eps;
+
+            // 推算规则：把「本段第 1 集」对齐到目标条目的第一集。
+            // 典型用法（TMDB 3 季 vs Bangumi 2 季）里，用户选中的正是该段的
+            // 起始条目，因此起点的目标集号就是该条目首个正片章节的 sort。
+            // sort 不一定从 1 开始（可能含 SP/OP 等非正片章节），故从数据取。
+            const firstSort = eps[0].sort;
+            _setVal('seg-offset', firstSort);
+            updateSegmentPreview();
+
+            // 若本段起始集号不是 1，提示用户确认意图 —— 这类配置最容易配错
+            const hint =
+                from > 1
+                    ? `第 ${from} 集 → 该条目 E${firstSort}。若你其实想从该条目的第 1 集开始，请把起始集改为 1。`
+                    : `第 1 集 → 该条目 E${firstSort}。`;
+            showAlert(`已按该条目章节推算：${hint}请核对预览。`, 'success');
+        } catch (error) {
+            console.error('自动推算失败:', error);
+            showAlert('自动推算失败，请手动填写', 'danger');
+        }
+    }
+
+    function _resetSegments() {
+        const enabled = document.getElementById('segments-enabled');
+        if (enabled) enabled.checked = false;
+        _setVal('segment-mode', 'whole');
+        _setVal('seg-from', 1);
+        _setVal('seg-to', '');
+        _setVal('seg-subject-id', '');
+        _setVal('seg-offset', 1);
+        toggleSegments(false);
+    }
 
     function _ensureModal() {
         if (!_modal) {
@@ -42,6 +207,8 @@ const MappingModal = (function () {
         if (previewId) previewId.value = '';
         const previewLink = document.getElementById('preview-link');
         if (previewLink) previewLink.classList.add('is-hidden');
+        _state.editingEntry = null;
+        _resetSegments();
     }
 
     /**
@@ -130,6 +297,37 @@ const MappingModal = (function () {
             _state.editingType = 'exact';
             _state.editingTitle = title;
             _state.editingRuleIndex = null;
+            _state.editingEntry =
+                typeof value === 'object' && value !== null ? value : null;
+
+            // 回填已有的集数分段（只支持一条；多条属手改 JSON 的高级用法，
+            // 此处提示用户去手动编辑，避免界面上悄悄丢掉其余分段）
+            const segs = _state.editingEntry && Array.isArray(_state.editingEntry.segments)
+                ? _state.editingEntry.segments
+                : [];
+            if (segs.length === 1) {
+                const s = segs[0];
+                document.getElementById('segments-enabled').checked = true;
+                toggleSegments(true);
+                if (s.to === null || s.to === undefined) {
+                    _setVal('segment-mode', (s.from || 1) > 1 ? 'from' : 'whole');
+                } else {
+                    _setVal('segment-mode', 'range');
+                }
+                _setVal('seg-from', s.from || 1);
+                _setVal('seg-to', s.to === null || s.to === undefined ? '' : s.to);
+                _setVal('seg-subject-id', s.subject_id || '');
+                _setVal('seg-offset', s.offset || 1);
+                onSegmentModeChange();
+            } else if (segs.length > 1) {
+                const preview = document.getElementById('segment-preview');
+                if (preview) {
+                    preview.innerHTML =
+                        `<span class="text-warning">该条目配置了 ${segs.length} 条分段，` +
+                        '此界面不支持下编辑多条；请直接编辑 bangumi_mapping.json，' +
+                        '保存本表单不会改动 segments。</span>';
+                }
+            }
         }
         updatePreview();
         _modal.show();
@@ -200,16 +398,47 @@ const MappingModal = (function () {
                     _state.currentRules = newRules;
                 }
 
-                // 合并写回：已有配置对象时只更新 subject_id/season，
-                // 保留 segments 等本弹窗不编辑的字段（原实现整体重建对象，
-                // 会把用户手写的集数分段表抹掉）。
+                // 集数分段（可选）
+                const segEnabled = document.getElementById('segments-enabled')?.checked;
+                let newSegment = null;
+                if (segEnabled) {
+                    newSegment = buildSegment();
+                    if (!newSegment) {
+                        showAlert(
+                            '集数分段填写不完整：集号与目标条目 ID 必须为正整数，且结束集不小于起始集',
+                            'warning'
+                        );
+                        return;
+                    }
+                }
+
+                // 合并写回：已有配置对象时只更新 subject_id/season/segments，
+                // 保留本弹窗不编辑的其它字段（原实现整体重建对象会抹掉它们）。
                 const existing = newMappings[title];
+                const isObj =
+                    existing && typeof existing === 'object' && !Array.isArray(existing);
+                const merged = isObj ? Object.assign({}, existing) : {};
+
+                merged.subject_id = id;
                 if (season) {
-                    newMappings[title] = (existing && typeof existing === 'object' && !Array.isArray(existing))
-                        ? Object.assign({}, existing, { subject_id: id, season: season })
-                        : { subject_id: id, season: season };
-                } else if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
-                    newMappings[title] = Object.assign({}, existing, { subject_id: id });
+                    merged.season = season;
+                } else {
+                    delete merged.season;
+                }
+                if (segEnabled && newSegment) {
+                    merged.segments = [newSegment];
+                } else if (!segEnabled && isObj && 'segments' in merged) {
+                    // 用户显式关闭了分段开关 → 移除（多条分段的场景已在
+                    // showEdit 中提示，此处按用户意图清空）
+                    delete merged.segments;
+                }
+
+                // 仅当存在扩展字段时才写对象形式，否则保持简洁的简单格式
+                const hasExtra = Object.keys(merged).some(
+                    (k) => k !== 'subject_id' && k !== 'season'
+                );
+                if (season || hasExtra || isObj) {
+                    newMappings[title] = merged;
                 } else {
                     newMappings[title] = id;
                 }
@@ -288,5 +517,10 @@ const MappingModal = (function () {
         save,
         setMappingType,
         updatePreview,
+        // 集数分段（场景选择式）
+        toggleSegments,
+        onSegmentModeChange,
+        updateSegmentPreview,
+        prefillOffset,
     };
 })();
