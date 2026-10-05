@@ -282,7 +282,8 @@ class TestSegmentMapping:
         svc._write_config({"mappings": {"番": {"subject_id": "5", "segments": "oops"}}})
         _sid, _mtype, _reason, explicit = svc.find_mapping("番", "", 1)
         assert explicit is False
-        assert svc.get_segments_for("番", "", 1) == []
+        # 该非法字段也确实不产生任何可命中的段
+        assert svc.find_episode_mapping("番", "", 1, 3) == ("", None, "")
 
     def test_inverted_range_warns_and_never_matches(self, svc):
         """to < from 是反向区间，永远不可能命中，必须告警而不是静默失效

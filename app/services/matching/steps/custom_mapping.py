@@ -75,8 +75,7 @@ class CustomMappingStep(MatchStepBase):
 
         if mapping_subject_id:
             # is_explicit 已由 find_mapping 判定完毕（声明了 season，或条目携带
-            # 非空的 segments）。此处无需再 OR 一次 get_segments_for：那既重复
-            # 读一遍配置，又掩盖了「explicit 的判定只应有一个来源」这件事。
+            # 非空的 segments）。这里是唯一的判定来源，不再自行读配置重算。
             return self._hit(
                 ctx,
                 subject_id=mapping_subject_id,

@@ -446,31 +446,6 @@ class MappingService:
                 return parsed
         return None
 
-    def get_segments_for(
-        self, title: str, ori_title: str = "", season: int = 1
-    ) -> list[dict[str, Any]]:
-        """返回该请求命中的配置对象所携带的 segments（无则空列表）。
-
-        供匹配阶段判断「该请求是否属于显式绑定」：即使当前集未被任何段覆盖
-        （应由调用方回退顶层 subject_id），只要条目声明了 segments，就说明
-        用户显式指定了条目结构，不应再走沿续集链猜的老路。
-        """
-        mappings = self.load_custom_mappings()
-        for candidate_title in (title, ori_title):
-            if not candidate_title:
-                continue
-            entry = mappings.get(candidate_title)
-            if not isinstance(entry, dict):
-                continue
-            segs = entry.get("segments")
-            if not isinstance(segs, list) or not segs:
-                continue
-            entry_season = self._parse_season(entry.get("season"))
-            if entry_season is not None and entry_season != season:
-                continue
-            return [s for s in segs if isinstance(s, dict)]
-        return []
-
     def matches_any(
         self, title: str, ori_title: str = "", season: int = 1, episode: int = 0
     ) -> bool:

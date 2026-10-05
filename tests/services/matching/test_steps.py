@@ -163,9 +163,7 @@ class TestCustomMappingStep:
 
         此时不应再走沿续集链猜的老路。关键是 ``explicit`` 只能有一个判定来源：
         ``find_mapping`` 在条目携带非空 segments 时**已经**返回 True（它同时
-        是 fallback subject_id 的提供者），因此这里直接采信它的返回值即可，
-        不需要再用 get_segments_for 去 OR 一遍（那是重复读盘，且掩盖了
-        「判定来源唯一」这一点）。
+        是 fallback subject_id 的提供者），因此这里直接采信它的返回值即可。
         """
         ctx = _build_ctx(title="JOJO", season=6, episode=99)
         with (
