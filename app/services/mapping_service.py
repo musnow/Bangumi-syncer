@@ -407,6 +407,32 @@ class MappingService:
             return [s for s in segs if isinstance(s, dict)]
         return []
 
+    def matches_any(
+        self, title: str, ori_title: str = "", season: int = 1, episode: int = 0
+    ) -> bool:
+        """该请求是否命中任意自定义映射（标题级或集数分段级）。
+
+        **这是「是否命中自定义映射」的唯一权威判定**。屏蔽关键词的豁免逻辑
+        （SyncService._is_title_blocked）与匹配管线的 CustomMappingStep 都必须
+        经由它判断，避免两处各写一份而口径漂移。
+
+        历史教训：_is_title_blocked 曾自行解包 find_mapping 的返回值，在
+        find_mapping 增加返回值后因解包数不匹配抛 ValueError，又被自身的
+        ``except Exception`` 吞掉，导致「自定义映射优先于屏蔽词」静默失效。
+        """
+        if episode:
+            seg_sid, _target, _reason = self.find_episode_mapping(
+                title, ori_title, season, episode
+            )
+            if seg_sid:
+                return True
+        mapping_sid, _match_type, _reason, _explicit = self.find_mapping(
+            title=title or "", ori_title=ori_title or "", season=season
+        )
+        # 显式 bool()：调用方可能被 mock 替换（返回 MagicMock 等真值对象），
+        # 不归一化会让「未命中」被当成命中，进而误豁免屏蔽词。
+        return bool(mapping_sid)
+
     def reload_custom_mappings(self) -> dict[str, Any]:
         """强制重新加载自定义映射配置"""
         # 清空缓存强制重新加载

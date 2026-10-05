@@ -846,7 +846,9 @@ class SyncService(TaskManagerMixin, RetryMixin, SeasonInfoMixin, TitleNormalizeM
             )[0]:
                 return SyncResponse(status="error", message=perm_ok[1])
 
-            if self._is_title_blocked(item.title, item.ori_title, item.season):
+            if self._is_title_blocked(
+                item.title, item.ori_title, item.season, item.episode
+            ):
                 return SyncResponse(
                     status="ignored", message="番剧标题包含屏蔽关键词，跳过同步"
                 )
@@ -1060,7 +1062,9 @@ class SyncService(TaskManagerMixin, RetryMixin, SeasonInfoMixin, TitleNormalizeM
             return SyncResponse(status="error", message=perm_ok[1])
 
         # 检查是否包含屏蔽关键词
-        if self._is_title_blocked(item.title, item.ori_title, item.season):
+        if self._is_title_blocked(
+            item.title, item.ori_title, item.season, item.episode
+        ):
             return SyncResponse(
                 status="ignored", message="番剧标题包含屏蔽关键词，跳过同步"
             )
@@ -1605,7 +1609,11 @@ class SyncService(TaskManagerMixin, RetryMixin, SeasonInfoMixin, TitleNormalizeM
         return True, ""
 
     def _is_title_blocked(
-        self, title: str, ori_title: str = None, season: int = 1
+        self,
+        title: str,
+        ori_title: str = None,
+        season: int = 1,
+        episode: int = 0,
     ) -> bool:
         """检查番剧标题是否命中屏蔽关键词（DB 统一入口）
 
@@ -1616,22 +1624,27 @@ class SyncService(TaskManagerMixin, RetryMixin, SeasonInfoMixin, TitleNormalizeM
 
         生效时机：**匹配前**（与历史 ``[sync] blocked_keywords`` 一致）。
 
-        ``season`` 参与「自定义映射优先」的判定：高级格式映射
-        （``{"subject_id": "...", "season": N}``）只在 season 相符时才算命中，
-        因此必须由调用方传入真实季度；否则第 2 季请求会被第 1 季的映射放行，
-        绕过屏蔽词。默认 1 仅为兼容历史调用与测试。
+        ``season`` / ``episode`` 参与「自定义映射优先」的判定：高级格式映射
+        只在 season 相符时才算命中，集数分段映射还要求 episode 落在某个区间内，
+        因此必须由调用方传入真实值；否则第 2 季请求会被第 1 季的映射放行，
+        绕过屏蔽词。
+
+        判定统一委托 ``mapping_service.matches_any``，**不再自行解包
+        find_mapping 的返回值** —— 曾经因此在该函数签名变更后静默失效
+        （异常被下面的 except 吞掉，表现为映射不再豁免屏蔽词）。
         """
         # 自定义映射优先：显式意图压过屏蔽规则
         try:
-            mapping_sid, _match_type, _reason, _explicit = mapping_service.find_mapping(
+            hit = mapping_service.matches_any(
                 title=title or "",
                 ori_title=ori_title or "",
                 season=season,
+                episode=episode,
             )
-            if mapping_sid:
-                logger.debug(
-                    f"标题 {title!r} 命中自定义映射 {mapping_sid}，跳过屏蔽关键词判定"
-                )
+            # 严格归一为 bool：mapping_service 在测试中常被整体 mock，
+            # MagicMock 的返回值恒为真值，会让「未命中」被当成命中而误豁免屏蔽。
+            if hit is True:
+                logger.debug(f"标题 {title!r} 命中自定义映射，跳过屏蔽关键词判定")
                 return False
         except Exception as e:  # noqa: BLE001 — 映射查询失败不阻断判定
             logger.debug(f"查询自定义映射失败（继续按屏蔽词判定）: {e}")
