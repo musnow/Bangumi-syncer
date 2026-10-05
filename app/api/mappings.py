@@ -40,10 +40,25 @@ async def update_custom_mappings(
         mappings = data.get("mappings", {})
         rules = data.get("rules")  # None 表示保留现有 rules
 
-        # 更新映射（rules=None 时保留现有）
-        mapping_service.update_custom_mappings(mappings, rules=rules)
+        if not isinstance(mappings, dict):
+            raise HTTPException(status_code=400, detail="mappings 必须是对象")
+        if rules is not None and not isinstance(rules, list):
+            raise HTTPException(status_code=400, detail="rules 必须是数组")
+
+        # 更新映射（rules=None 时保留现有）。
+        # 必须检查返回值：写盘失败（权限、磁盘满）或配置文件损坏被拒绝写入时
+        # 返回 False，此时若照旧回 success，前端会显示「保存成功」而改动其实
+        # 没有落盘，用户下次同步仍然命中旧配置。
+        if not mapping_service.update_custom_mappings(mappings, rules=rules):
+            raise HTTPException(
+                status_code=500,
+                detail="映射写入失败：配置文件可能损坏或无写入权限，"
+                "请检查 bangumi_mapping.json 的 JSON 语法与文件权限",
+            )
 
         return {"status": "success", "message": "映射更新成功"}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"更新自定义映射失败: {e}")
         raise HTTPException(status_code=500, detail=f"更新自定义映射失败: {str(e)}")

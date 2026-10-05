@@ -1,0 +1,370 @@
+"""自定义映射：高级格式、segments 集数分段、写回安全性的回归测试。
+
+这些用例补上了原先的覆盖空洞：既有测试**只用简单字符串格式**
+（``{"番A": "111"}``），且 test_mapping_service.py 把 builtins.open 与
+json.dump 都 mock 掉、只断言 dump 被调用一次，因此对「高级格式丢字段」
+「非法规则被静默删除」「损坏文件被空配置覆盖」这类数据丢失完全无感。
+"""
+
+import json
+import os
+
+import pytest
+
+from app.services.mapping_service import MappingService
+
+
+@pytest.fixture
+def svc(tmp_path, monkeypatch):
+    """在临时 cwd 下构建 MappingService 与可写配置文件"""
+    monkeypatch.chdir(tmp_path)
+    service = MappingService()
+
+    def _write(data):
+        (tmp_path / "bangumi_mapping.json").write_text(
+            json.dumps(data, ensure_ascii=False), encoding="utf-8"
+        )
+
+    service._write_config = _write
+    return service
+
+
+def _read(tmp_path):
+    return json.loads((tmp_path / "bangumi_mapping.json").read_text(encoding="utf-8"))
+
+
+# --------------------------------------------------------------------------
+# 季度感知格式：命中语义与显式标记
+# --------------------------------------------------------------------------
+
+
+class TestSeasonAwareMapping:
+    def test_season_match_and_explicit_flag(self, svc):
+        """声明了 season 的映射命中时，is_explicit 必须为 True"""
+        svc._write_config({"mappings": {"某番": {"subject_id": "123", "season": 2}}})
+        sid, mtype, _reason, explicit = svc.find_mapping("某番", "", 2)
+        assert sid == "123"
+        assert mtype == "season"
+        assert explicit is True
+
+    def test_season_mismatch_falls_through(self, svc):
+        """season 不匹配时不应命中（落到未命中）"""
+        svc._write_config({"mappings": {"某番": {"subject_id": "123", "season": 2}}})
+        assert svc.find_mapping("某番", "", 3) == ("", "", "", False)
+
+    def test_simple_format_is_not_explicit(self, svc):
+        """简单格式保持历史语义（填主条目、程序往后找），is_explicit 为 False"""
+        svc._write_config({"mappings": {"某番": "123"}})
+        assert svc.find_mapping("某番", "", 1) == (
+            "123",
+            "exact",
+            "自定义映射命中：某番=123",
+            False,
+        )
+
+    def test_unparsable_season_does_not_raise(self, svc):
+        """season 写成非数字时跳过季度条件，绝不抛异常打断同步"""
+        svc._write_config({"mappings": {"某番": {"subject_id": "123", "season": "S2"}}})
+        sid, mtype, _reason, explicit = svc.find_mapping("某番", "", 5)
+        assert sid == "123"
+        assert mtype == "season"
+        # season 不可解析 → 视为未声明 → 不标记为显式
+        assert explicit is False
+
+    def test_dict_without_subject_id_is_skipped(self, svc):
+        """缺 subject_id 的配置对象应被跳过，而不是崩在 str(None)"""
+        svc._write_config({"mappings": {"某番": {"season": 2}}})
+        assert svc.find_mapping("某番", "", 2) == ("", "", "", False)
+
+
+# --------------------------------------------------------------------------
+# segments 集数分段映射
+# --------------------------------------------------------------------------
+
+
+class TestSegmentMapping:
+    # 媒体 S6 的 E1 归条目 A；E2 起归条目 B，且 B 的第 1 集从 E2 开始
+    # （offset = 该段第一集对应的目标集号 = 1）
+    CFG = {
+        "mappings": {
+            "JOJO": {
+                "subject_id": "43558",
+                "segments": [
+                    {"season": 6, "from": 1, "to": 1, "subject_id": "A"},
+                    {
+                        "season": 6,
+                        "from": 2,
+                        "to": None,
+                        "subject_id": "B",
+                        "offset": 1,
+                    },
+                ],
+            }
+        }
+    }
+
+    def test_segment_boundaries(self, svc):
+        """段边界：E1→A E1；E2→B E1；E3→B E2（offset 为首集目标集号）"""
+        svc._write_config(self.CFG)
+        assert svc.find_episode_mapping("JOJO", "", 6, 1)[:2] == ("A", 1)
+        assert svc.find_episode_mapping("JOJO", "", 6, 2)[:2] == ("B", 1)
+        assert svc.find_episode_mapping("JOJO", "", 6, 3)[:2] == ("B", 2)
+
+    def test_issue_267_scenario(self, svc):
+        """issue #267 场景：媒体 S06E03 → 目标条目 E02
+
+        用户的诉求是「E3 起归条目 639938，且 E3 对应该条目的 E2」，
+        即 from=3、offset=2。
+        """
+        svc._write_config(
+            {
+                "mappings": {
+                    "JOJO的奇妙冒险": {
+                        "subject_id": "43558",
+                        "segments": [
+                            {
+                                "season": 6,
+                                "from": 3,
+                                "to": None,
+                                "subject_id": "639938",
+                                "offset": 2,
+                            }
+                        ],
+                    }
+                }
+            }
+        )
+        assert svc.find_episode_mapping("JOJO的奇妙冒险", "", 6, 3)[:2] == (
+            "639938",
+            2,
+        )
+        assert svc.find_episode_mapping("JOJO的奇妙冒险", "", 6, 4)[:2] == (
+            "639938",
+            3,
+        )
+
+    def test_season_is_a_match_condition(self, svc):
+        """段的 season 不匹配时不应命中（这就是 segments 需要 season 字段的原因）"""
+        svc._write_config(self.CFG)
+        assert svc.find_episode_mapping("JOJO", "", 5, 3) == ("", None, "")
+
+    def test_offset_shifts_to_target_number(self, svc):
+        """offset = 该段第一集对应的目标集号"""
+        svc._write_config(
+            {
+                "mappings": {
+                    "番": {
+                        "subject_id": "9",
+                        "segments": [{"season": 1, "from": 1, "to": None, "offset": 3}],
+                    }
+                }
+            }
+        )
+        # from=1, offset=3 → E1→E3, E2→E4
+        assert svc.find_episode_mapping("番", "", 1, 1)[:2] == ("9", 3)
+        assert svc.find_episode_mapping("番", "", 1, 2)[:2] == ("9", 4)
+
+    def test_episodes_of_overrides_offset(self, svc):
+        """段内逐集例外优先于 offset"""
+        svc._write_config(
+            {
+                "mappings": {
+                    "番": {
+                        "subject_id": "9",
+                        "segments": [
+                            {
+                                "season": 1,
+                                "from": 1,
+                                "to": None,
+                                "offset": 1,
+                                "episodes_of": {"3": 9},
+                            }
+                        ],
+                    }
+                }
+            }
+        )
+        assert svc.find_episode_mapping("番", "", 1, 2)[:2] == ("9", 2)
+        assert svc.find_episode_mapping("番", "", 1, 3)[:2] == ("9", 9)
+
+    def test_segment_without_subject_id_falls_back_to_top_level(self, svc):
+        """段未指定 subject_id 时继承顶层 subject_id"""
+        svc._write_config(
+            {
+                "mappings": {
+                    "番": {
+                        "subject_id": "top",
+                        "segments": [{"season": 1, "from": 1, "to": None}],
+                    }
+                }
+            }
+        )
+        assert svc.find_episode_mapping("番", "", 1, 1)[0] == "top"
+
+    def test_overlapping_segments_take_first(self, svc):
+        """重叠时取数组中靠前的一段（可预测）"""
+        svc._write_config(
+            {
+                "mappings": {
+                    "番": {
+                        "subject_id": "9",
+                        "segments": [
+                            {"season": 1, "from": 1, "to": 5, "subject_id": "first"},
+                            {"season": 1, "from": 3, "to": 9, "subject_id": "second"},
+                        ],
+                    }
+                }
+            }
+        )
+        assert svc.find_episode_mapping("番", "", 1, 4)[0] == "first"
+
+    def test_gap_returns_empty_for_caller_fallback(self, svc):
+        """区间空缺时返回空，由调用方回退顶层 subject_id"""
+        svc._write_config(
+            {
+                "mappings": {
+                    "番": {
+                        "subject_id": "9",
+                        "segments": [
+                            {"season": 1, "from": 1, "to": 2, "subject_id": "A"}
+                        ],
+                    }
+                }
+            }
+        )
+        assert svc.find_episode_mapping("番", "", 1, 50) == ("", None, "")
+
+    def test_season_omitted_matches_any_season(self, svc):
+        """段省略 season 时对任意季生效（= 旧简单映射语义）"""
+        svc._write_config(
+            {
+                "mappings": {
+                    "番": {
+                        "subject_id": "9",
+                        "segments": [{"from": 1, "to": None, "subject_id": "any"}],
+                    }
+                }
+            }
+        )
+        assert svc.find_episode_mapping("番", "", 7, 1)[0] == "any"
+
+    def test_segments_makes_mapping_explicit(self, svc):
+        """带 segments 的配置视为显式指定，命中映射时应被标记"""
+        svc._write_config(self.CFG)
+        _sid, _mtype, _reason, explicit = svc.find_mapping("JOJO", "", 6)
+        assert explicit is True
+
+    def test_empty_episode_returns_empty(self, svc):
+        svc._write_config(self.CFG)
+        assert svc.find_episode_mapping("JOJO", "", 6, 0) == ("", None, "")
+
+
+# --------------------------------------------------------------------------
+# 写回安全：不得静默丢数据
+# --------------------------------------------------------------------------
+
+
+class TestWriteRoundTrip:
+    def test_malformed_rule_survives_round_trip(self, svc, tmp_path):
+        """非法正则规则不得被静默删除（原实现会把过滤后的列表写回）"""
+        svc._write_config(
+            {
+                "mappings": {"番": "1"},
+                "rules": [
+                    {"pattern": "^GOOD$", "subject_id": "1"},
+                    {"pattern": "([unclosed", "subject_id": "2"},
+                ],
+            }
+        )
+        assert svc.update_custom_mappings(svc.get_all_mappings()) is True
+        rules = _read(tmp_path)["rules"]
+        assert len(rules) == 2
+        assert any(r.get("pattern") == "([unclosed" for r in rules)
+
+    def test_advanced_format_survives_round_trip(self, svc, tmp_path):
+        """{subject_id, season, segments} 必须原样往返，字段不丢"""
+        svc._write_config(
+            {
+                "mappings": {
+                    "番": {
+                        "subject_id": "123",
+                        "season": 2,
+                        "segments": [{"season": 2, "from": 1, "to": None, "offset": 5}],
+                    }
+                }
+            }
+        )
+        assert svc.update_custom_mappings(svc.get_all_mappings()) is True
+        entry = _read(tmp_path)["mappings"]["番"]
+        assert entry["subject_id"] == "123"
+        assert entry["season"] == 2
+        assert entry["segments"][0]["offset"] == 5
+
+    def test_unknown_top_level_keys_preserved(self, svc, tmp_path):
+        """用户自行添加的顶层键不应被写回抹掉"""
+        path = tmp_path / "bangumi_mapping.json"
+        path.write_text(
+            json.dumps(
+                {"mappings": {}, "rules": [], "my_own_note": {"keep": "me"}},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        assert svc.update_custom_mappings({"番": "1"}) is True
+        assert _read(tmp_path)["my_own_note"] == {"keep": "me"}
+
+    def test_corrupt_file_is_not_overwritten(self, svc, tmp_path):
+        """文件损坏时必须拒绝写入，绝不能清空用户配置"""
+        path = tmp_path / "bangumi_mapping.json"
+        path.write_text("{not valid json", encoding="utf-8")
+        assert svc.update_custom_mappings({"番": "1"}) is False
+        # 原文件保持原样
+        assert path.read_text(encoding="utf-8") == "{not valid json"
+
+    def test_write_is_atomic_no_temp_left(self, svc, tmp_path):
+        """写入后不应残留临时文件"""
+        svc._write_config({"mappings": {"番": "1"}})
+        assert svc.update_custom_mappings({"番": "2"}) is True
+        leftovers = [
+            p for p in os.listdir(tmp_path) if p.startswith(".bangumi_mapping")
+        ]
+        assert leftovers == []
+
+    def test_upsert_preserves_segments(self, svc, tmp_path):
+        """upsert 单条映射时不得抹掉已有的 segments（原实现重建整个值）"""
+        svc._write_config(
+            {
+                "mappings": {
+                    "番": {
+                        "subject_id": "old",
+                        "season": 2,
+                        "segments": [{"season": 2, "from": 1, "to": None, "offset": 3}],
+                    }
+                }
+            }
+        )
+        assert svc.upsert_single_mapping("番", "new", season=2) is True
+        entry = _read(tmp_path)["mappings"]["番"]
+        assert entry["subject_id"] == "new"
+        assert entry["segments"][0]["offset"] == 3
+
+    def test_upsert_new_title_uses_simple_format(self, svc, tmp_path):
+        """season<=1 的新标题仍写简单格式（保持 confirm 流程原行为）"""
+        svc._write_config({"mappings": {}})
+        assert svc.upsert_single_mapping("新番", "555", season=1) is True
+        assert _read(tmp_path)["mappings"]["新番"] == "555"
+
+
+# --------------------------------------------------------------------------
+# 文件不存在时的默认配置
+# --------------------------------------------------------------------------
+
+
+def test_default_file_created_with_global_note(tmp_path, monkeypatch):
+    """首次运行创建的默认文件应说明「映射是全局配置」"""
+    monkeypatch.chdir(tmp_path)
+    svc = MappingService()
+    svc.load_custom_mappings()
+    data = _read(tmp_path)
+    assert "全局" in data["_note"]
+    assert "假面骑士加布" in data["mappings"]
