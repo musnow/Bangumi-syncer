@@ -51,16 +51,8 @@ class MappingService:
     def __init__(self) -> None:
         self._cached_mappings: dict[str, Any] = {}
         self._cached_rules: list[dict[str, Any]] = []
-        # 未经过滤的原始规则列表：写回时以它为准，避免「加载时过滤 → 写回时
-        # 落盘」，把用户手写的非法/不完整规则静默删除。
-        self._raw_rules: list[dict[str, Any]] = []
-        # 顶层非 mappings/rules 的自定义键（用户可能自行添加注释等），
-        # 写回时原样保留。
-        self._extra_top_level: dict[str, Any] = {}
         self._mapping_file_path: str | None = None
         self._last_modified_time: float = 0
-        # 上次加载时文件是否解析失败。为 True 时禁止写入（见 update_custom_mappings）。
-        self._load_failed: bool = False
 
     def _find_existing_path(self) -> str | None:
         """返回第一个存在的映射配置文件路径，都不存在返回 None"""
@@ -159,15 +151,8 @@ class MappingService:
                 # 更新缓存
                 self._cached_mappings = mappings
                 self._cached_rules = normalized_rules
-                self._raw_rules = list(rules)
-                self._extra_top_level = {
-                    k: v
-                    for k, v in data.items()
-                    if k not in ("mappings", "rules", "_comment", "_format", "_note")
-                }
                 self._mapping_file_path = current_file_path
                 self._last_modified_time = current_modified_time
-                self._load_failed = False
 
                 logger.debug(
                     f"从 {current_file_path} 重新加载了 {len(mappings)} 个映射、"
@@ -187,9 +172,9 @@ class MappingService:
                 f"读取自定义映射文件 {current_file_path} 失败: {e}；"
                 "已保留上次成功加载的配置，并在问题解决前拒绝写入该文件"
             )
-            # 解析/结构错误：标记失败，禁止后续写入覆盖用户数据（原实现会
-            # 退化为 {} 再整体写回，等于把损坏文件清空）。
-            self._load_failed = True
+            # 解析/结构错误：保持缓存不动（不回退为 {}），并记住文件路径。
+            # 写入路径会自行重新解析该文件，解析失败即拒绝写入，因此不会
+            # 出现「用空配置覆盖用户数据」的情况。
             self._mapping_file_path = current_file_path
             # 如果读取失败，返回缓存的配置（如果有的话）
             return self._cached_mappings.copy() if self._cached_mappings else {}
@@ -435,11 +420,8 @@ class MappingService:
         # 清空缓存强制重新加载
         self._cached_mappings = {}
         self._cached_rules = []
-        self._raw_rules = []
-        self._extra_top_level = {}
         self._mapping_file_path = None
         self._last_modified_time = 0
-        self._load_failed = False
 
         logger.info("强制重新加载自定义映射配置")
         return self.load_custom_mappings()
@@ -515,8 +497,9 @@ class MappingService:
                     )
                     return False
 
-            # 未显式提供 rules 时，从磁盘读原始 rules（而不是内存中过滤后的
-            # _raw_rules），确保并发场景下读到的是最新内容。
+            # 未显式提供 rules 时，从磁盘读原始（未过滤）rules —— 内存里的
+            # _cached_rules 是过滤后的匹配用视图，写回它会静默删除用户的
+            # 非法/不完整规则。
             if rules is None:
                 rules = config_data.get("rules", []) or []
 
