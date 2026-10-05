@@ -1686,3 +1686,98 @@ def test_find_subject_id_api_season_gt1_top_movie_reselects_mainline_via_related
     bgm.get_related_subjects.assert_called_once()
     # 验证 get_subject 被调用以获取关联条目详情
     bgm.get_subject.assert_called_with(577198)
+
+
+# --------------------------------------------------------------------------
+# _resolve_season_episode 的 media_type 分派
+# --------------------------------------------------------------------------
+
+
+class TestResolveSeasonEpisodeMediaTypeDispatch:
+    """media_type → 解析路径的映射必须与整体口径一致
+
+    历史疑点：mark_watching 短路径把 movie 与 real_action **都**当剧场版
+    处理（orchestrator.py），而 _resolve_season_episode 只对 movie 走
+    「条目内首集」短路径。两者口径看似矛盾，实则有明确分工：
+
+    - **只有 movie** 适合「条目内首集」：剧场版是单集条目，媒体库推来的
+      episode 往往是 1 或片源序号，用它是危险的（会当成章节定位）；
+    - **real_action 必须走季番解析**：三次元剧集（如日剧）在
+      _normalize_custom_item_params 中被归入剧集路径（不允许 season=0、
+      episode 不能为 0），其 episode 是真实集号。
+
+    因此 real_action 绝不能进电影分支 —— 否则 episode 会被当章节定位用，
+    把剧集解析到错误的一集。本用例把该不变量固定下来。
+    """
+
+    @staticmethod
+    def _item(media_type: str):
+        return CustomItem(
+            user_name="u",
+            title="某番",
+            season=1,
+            episode=5,
+            media_type=media_type,
+            release_date="2024-01-01",
+        )
+
+    def test_movie_uses_movie_shortcut(self):
+        svc = SyncService()
+        bgm = MagicMock()
+        bgm.get_movie_main_episode_id.return_value = ("100", "200")
+
+        result = svc._resolve_season_episode(bgm, self._item("movie"), "100", False)
+
+        assert result == ("100", "200")
+        bgm.get_movie_main_episode_id.assert_called_once()
+        bgm.get_target_season_episode_id.assert_not_called()
+
+    def test_real_action_uses_season_path(self):
+        """real_action 必须走季番解析（其 episode 是真实集号）"""
+        svc = SyncService()
+        bgm = MagicMock()
+        bgm.get_target_season_episode_id.return_value = ("100", "300")
+
+        result = svc._resolve_season_episode(
+            bgm, self._item("real_action"), "100", False
+        )
+
+        assert result == ("100", "300")
+        bgm.get_target_season_episode_id.assert_called_once()
+        # 关键：绝不能走电影短路径（那会把 episode 当章节定位用）
+        bgm.get_movie_main_episode_id.assert_not_called()
+
+    def test_episode_uses_season_path(self):
+        svc = SyncService()
+        bgm = MagicMock()
+        bgm.get_target_season_episode_id.return_value = ("100", "300")
+
+        result = svc._resolve_season_episode(bgm, self._item("episode"), "100", False)
+
+        assert result == ("100", "300")
+        bgm.get_movie_main_episode_id.assert_not_called()
+
+    def test_movie_honours_target_episode_override(self):
+        """分段映射换算出的目标集号必须传给电影短路径（而非用 item.episode）"""
+        svc = SyncService()
+        bgm = MagicMock()
+        bgm.get_movie_main_episode_id.return_value = ("100", "200")
+        item = self._item("movie")
+        assert item.episode == 5
+
+        svc._resolve_season_episode(bgm, item, "100", False, target_episode=9)
+
+        # target_sort 应为换算后的 9，而不是媒体库集号 5
+        assert bgm.get_movie_main_episode_id.call_args.kwargs["target_sort"] == 9
+
+    def test_season_path_honours_target_episode_override(self):
+        """分段映射的目标集号必须优先于 item.episode（剧集路径）"""
+        svc = SyncService()
+        bgm = MagicMock()
+        bgm.get_target_season_episode_id.return_value = ("100", "300")
+
+        svc._resolve_season_episode(
+            bgm, self._item("episode"), "100", False, target_episode=9
+        )
+
+        assert bgm.get_target_season_episode_id.call_args.kwargs["target_ep"] == 9

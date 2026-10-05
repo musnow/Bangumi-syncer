@@ -1123,7 +1123,16 @@ class SyncService(TaskManagerMixin, RetryMixin, SeasonInfoMixin, TitleNormalizeM
             release_for_ep = item.release_date[:10]
         # 分段映射给出的目标集号优先；否则回落到请求携带的集号
         ep = target_episode if target_episode is not None else item.episode
-        # 电影走短路径，剧集走季番解析
+        # 只有 movie 走「条目内首集」短路径。
+        #
+        # real_action（Bangumi type=6 三次元）**不走**这条路径：它在
+        # _normalize_custom_item_params 中被明确归入剧集路径（不允许 season=0、
+        # episode 不能为 0），因此其 episode 是真实集号，必须按季番解析。
+        # 此前这里写的是 `if item.media_type == "movie"`，但在 mark_watching 的
+        # 短路径上 real_action 与 movie 同被当作剧场版处理，两处口径不一致；
+        # 若把 real_action 也塞进电影分支，它会用 episode 去当「章节定位」，
+        # 导致剧集被解析到错误集。以剧集路径为准，与本函数下方的 season 解析
+        # 及 _normalize_custom_item_params 保持一致。
         if item.media_type == "movie":
             return bgm.get_movie_main_episode_id(subject_id, target_sort=ep)
         return bgm.get_target_season_episode_id(
