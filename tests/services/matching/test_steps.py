@@ -20,7 +20,7 @@ from app.services.sync_service.match_trace import MatchTrace
 
 
 def _build_ctx(
-    title="测试番剧", ori_title=None, season=1, media_type="episode"
+    title="测试番剧", ori_title=None, season=1, episode=1, media_type="episode"
 ) -> MatchContext:
     service = MagicMock()
     return MatchContext(
@@ -29,7 +29,7 @@ def _build_ctx(
             title=title,
             ori_title=ori_title,
             season=season,
-            episode=1,
+            episode=episode,
             release_date="2024-01-15",
             user_name="u",
             source="test",
@@ -75,9 +75,20 @@ class TestNormalizeStep:
 class TestCustomMappingStep:
     def test_hit_sets_subject_id_and_stage(self):
         ctx = _build_ctx(title="Test Anime")
-        with patch(
-            "app.services.mapping_service.mapping_service.find_mapping",
-            return_value=("12345", "exact", "自定义映射命中：Test Anime=12345"),
+        with (
+            patch(
+                "app.services.mapping_service.mapping_service.find_episode_mapping",
+                return_value=("", None, ""),
+            ),
+            patch(
+                "app.services.mapping_service.mapping_service.find_mapping",
+                return_value=(
+                    "12345",
+                    "exact",
+                    "自定义映射命中：Test Anime=12345",
+                    False,
+                ),
+            ),
         ):
             outcome = CustomMappingStep().execute(ctx)
 
@@ -90,15 +101,88 @@ class TestCustomMappingStep:
 
     def test_miss_continues_pipeline(self):
         ctx = _build_ctx(title="未知番剧")
-        with patch(
-            "app.services.mapping_service.mapping_service.find_mapping",
-            return_value=("", "", ""),
+        with (
+            patch(
+                "app.services.mapping_service.mapping_service.find_episode_mapping",
+                return_value=("", None, ""),
+            ),
+            patch(
+                "app.services.mapping_service.mapping_service.find_mapping",
+                return_value=("", "", "", False),
+            ),
         ):
             outcome = CustomMappingStep().execute(ctx)
 
         assert outcome.status == "miss"
         assert outcome.is_terminal is False
         assert ctx.subject_id is None
+
+    def test_season_aware_hit_marks_season_matched(self):
+        """季度感知命中必须置 is_season_matched_id=True
+
+        这是 issue #267 的根因：原实现无条件写 False，使「在用户指定条目内
+        按集号定位」的分支永远不可达，显式绑定被迫沿续集链猜。
+        """
+        ctx = _build_ctx(title="Test Anime", season=2)
+        with (
+            patch(
+                "app.services.mapping_service.mapping_service.find_episode_mapping",
+                return_value=("", None, ""),
+            ),
+            patch(
+                "app.services.mapping_service.mapping_service.find_mapping",
+                return_value=("12345", "season", "季度感知映射命中", True),
+            ),
+        ):
+            outcome = CustomMappingStep().execute(ctx)
+
+        assert outcome.status == "hit"
+        assert ctx.is_season_matched_id is True
+        assert ctx.mapping_is_explicit is True
+        # 跨季改选仅对显式绑定关闭
+        assert outcome.outputs["is_explicit"] is True
+
+    def test_segment_hit_sets_target_episode(self):
+        """集数分段命中：产出目标条目 + 换算后的目标集号，且为显式绑定"""
+        ctx = _build_ctx(title="JOJO", season=6, episode=3)
+        with patch(
+            "app.services.mapping_service.mapping_service.find_episode_mapping",
+            return_value=("639938", 2, "集数分段映射命中"),
+        ):
+            outcome = CustomMappingStep().execute(ctx)
+
+        assert outcome.status == "hit"
+        assert ctx.subject_id == "639938"
+        assert ctx.mapping_target_episode == 2
+        assert ctx.is_season_matched_id is True
+        assert ctx.mapping_is_explicit is True
+        assert outcome.outputs["target_episode"] == "2"
+
+    def test_segment_miss_but_entry_has_segments_still_explicit(self):
+        """段未覆盖该集但条目声明了 segments 时，仍属显式绑定
+
+        此时回退顶层 subject_id，但不应再走沿续集链猜的老路。
+        """
+        ctx = _build_ctx(title="JOJO", season=6, episode=99)
+        with (
+            patch(
+                "app.services.mapping_service.mapping_service.find_episode_mapping",
+                return_value=("", None, ""),
+            ),
+            patch(
+                "app.services.mapping_service.mapping_service.find_mapping",
+                return_value=("43558", "season", "命中主条目", False),
+            ),
+            patch(
+                "app.services.mapping_service.mapping_service.get_segments_for",
+                return_value=[{"season": 6, "from": 1, "to": 2}],
+            ),
+        ):
+            outcome = CustomMappingStep().execute(ctx)
+
+        assert outcome.status == "hit"
+        assert ctx.subject_id == "43558"
+        assert ctx.mapping_is_explicit is True
 
 
 class TestBangumiDataStep:

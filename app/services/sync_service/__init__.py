@@ -1162,21 +1162,28 @@ class SyncService(TaskManagerMixin, RetryMixin, SeasonInfoMixin, TitleNormalizeM
         item: CustomItem,
         subject_id: str,
         is_season_matched_id: bool,
+        target_episode: int | None = None,
     ) -> tuple[str, str]:
         """根据 media_type 解析 Bangumi 季度与集数 ID。
 
         返回 (bgm_se_id, bgm_ep_id)；可能抛出 ValueError（认证错误由调用方处理）。
+
+        :param target_episode: 集数分段映射算出的**目标条目内集号**。非 None 时
+            直接采用它（已由 offset/episodes_of 换算完毕），不再用
+            ``item.episode``（那是媒体库集号，两者在有分段时并不相等）。
         """
         release_for_ep = None
         if item.release_date and len(item.release_date) >= 8:
             release_for_ep = item.release_date[:10]
+        # 分段映射给出的目标集号优先；否则回落到请求携带的集号
+        ep = target_episode if target_episode is not None else item.episode
         # 电影走短路径，剧集走季番解析
         if item.media_type == "movie":
-            return bgm.get_movie_main_episode_id(subject_id, target_sort=item.episode)
+            return bgm.get_movie_main_episode_id(subject_id, target_sort=ep)
         return bgm.get_target_season_episode_id(
             subject_id=subject_id,
             target_season=item.season,
-            target_ep=item.episode,
+            target_ep=ep,
             is_season_subject_id=is_season_matched_id,
             release_date=release_for_ep,
         )
@@ -1706,6 +1713,10 @@ class SyncService(TaskManagerMixin, RetryMixin, SeasonInfoMixin, TitleNormalizeM
 
         # 传播 ctx.is_ambiguous 到 trace，编排器据此发 match_ambiguous 通知
         actual_trace.is_ambiguous = ctx.is_ambiguous
+        # 自定义映射的显式性与分段目标集号同样经 trace 传给执行阶段：
+        # _find_subject_id 的 3 元组返回值被大量调用方依赖，不扩签名。
+        actual_trace.mapping_is_explicit = ctx.mapping_is_explicit
+        actual_trace.mapping_target_episode = ctx.mapping_target_episode
 
         # 注：此处原有一个「负样本黑名单 veto」——匹配命中后按 subject_id 比对
         # title_blacklist，命中则清空 result.subject_id 转为漏标。

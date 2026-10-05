@@ -468,6 +468,8 @@ class SyncOrchestrator:
             actual_source=actual_source,
             subject_id=subject_id,
             is_season_matched_id=is_season_matched_id,
+            mapping_is_explicit=trace.mapping_is_explicit,
+            mapping_target_episode=trace.mapping_target_episode,
         )
         pipeline = SyncPipeline(
             [

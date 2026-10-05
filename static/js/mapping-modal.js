@@ -200,8 +200,16 @@ const MappingModal = (function () {
                     _state.currentRules = newRules;
                 }
 
+                // 合并写回：已有配置对象时只更新 subject_id/season，
+                // 保留 segments 等本弹窗不编辑的字段（原实现整体重建对象，
+                // 会把用户手写的集数分段表抹掉）。
+                const existing = newMappings[title];
                 if (season) {
-                    newMappings[title] = { subject_id: id, season: season };
+                    newMappings[title] = (existing && typeof existing === 'object' && !Array.isArray(existing))
+                        ? Object.assign({}, existing, { subject_id: id, season: season })
+                        : { subject_id: id, season: season };
+                } else if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
+                    newMappings[title] = Object.assign({}, existing, { subject_id: id });
                 } else {
                     newMappings[title] = id;
                 }
