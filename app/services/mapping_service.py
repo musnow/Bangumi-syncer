@@ -36,14 +36,6 @@ _MAPPING_FILE_PATHS = (
     "/app/bangumi_mapping.json",  # Docker内部目录
 )
 
-#: 解析失败哨兵：文件存在但无法解析（JSON 语法错误等）。
-#: 与「文件不存在」严格区分 —— 前者绝不能写入，否则会用空配置覆盖用户数据。
-_PARSE_FAILED = object()
-
-
-class MappingWriteError(RuntimeError):
-    """映射写入被拒绝（配置损坏等不可安全覆盖的情形）。"""
-
 
 class MappingService:
     """映射服务"""
@@ -188,7 +180,7 @@ class MappingService:
 
     def find_mapping(
         self, title: str, ori_title: str = "", season: int = 1
-    ) -> tuple[str, str, str]:
+    ) -> tuple[str, str, str, bool]:
         """在自定义映射中查找匹配的 subject_id
 
         查找顺序：

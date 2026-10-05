@@ -129,7 +129,12 @@ class TestIsTitleBlocked:
         database_manager.add_blocked_keyword(DISTINCT_KW)
         monkeypatch.setattr(
             "app.services.sync_service.mapping_service.find_mapping",
-            lambda title, ori_title="", season=1: ("12345", "exact", "映射命中"),
+            lambda title, ori_title="", season=1: (
+                "12345",
+                "exact",
+                "映射命中",
+                False,
+            ),
         )
         try:
             assert sync_service._is_title_blocked(f"标题 {DISTINCT_KW}") is False
@@ -150,6 +155,29 @@ class TestIsTitleBlocked:
             assert sync_service._is_title_blocked(f"标题 {DISTINCT_KW}") is True
         finally:
             database_manager.remove_blocked_keyword(DISTINCT_KW)
+
+    def test_unpack_matches_real_find_mapping_arity(self):
+        """守护：_is_title_blocked 解包的元组长度必须与真实 find_mapping 一致
+
+        该调用点原先解包 3 元组；当 find_mapping 增加返回值后，这里会抛
+        ValueError，却被外层 ``except Exception`` 吞掉，导致「自定义映射
+        优先」静默失效 —— 而且因为测试里的 mock 也返回 3 元组，两边一起
+        错，没有任何用例报警。此用例直接比对真实签名的返回长度。
+        """
+        from app.services.mapping_service import MappingService
+
+        svc = MappingService()
+        svc._cached_mappings = {}
+        svc._cached_rules = []
+        svc._mapping_file_path = "/nonexistent/bangumi_mapping.json"
+        real = svc.find_mapping("不存在的番剧名-zz", "", 1)
+
+        # 真实返回值长度必须能被 _is_title_blocked 的 4 元组解包消费
+        mapping_sid, match_type, reason, explicit = real
+        assert mapping_sid == ""
+        assert match_type == ""
+        assert reason == ""
+        assert explicit is False
 
 
 class TestSeasonAwareMappingPriority:
@@ -175,7 +203,9 @@ class TestSeasonAwareMappingPriority:
                 patch(
                     "app.services.sync_service.mapping_service.find_mapping",
                     side_effect=lambda title, ori_title="", season=1: (
-                        ("12345", "season", "映射命中") if season == 1 else ("", "", "")
+                        ("12345", "season", "映射命中", True)
+                        if season == 1
+                        else ("", "", "", False)
                     ),
                 ),
             ):
@@ -193,7 +223,9 @@ class TestSeasonAwareMappingPriority:
                 patch(
                     "app.services.sync_service.mapping_service.find_mapping",
                     side_effect=lambda title, ori_title="", season=1: (
-                        ("12345", "season", "映射命中") if season == 1 else ("", "", "")
+                        ("12345", "season", "映射命中", True)
+                        if season == 1
+                        else ("", "", "", False)
                     ),
                 ),
             ):

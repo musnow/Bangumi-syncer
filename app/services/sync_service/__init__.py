@@ -1623,7 +1623,7 @@ class SyncService(TaskManagerMixin, RetryMixin, SeasonInfoMixin, TitleNormalizeM
         """
         # 自定义映射优先：显式意图压过屏蔽规则
         try:
-            mapping_sid, _, _ = mapping_service.find_mapping(
+            mapping_sid, _match_type, _reason, _explicit = mapping_service.find_mapping(
                 title=title or "",
                 ori_title=ori_title or "",
                 season=season,
