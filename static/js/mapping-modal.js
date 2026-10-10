@@ -82,8 +82,11 @@ const MappingModal = (function () {
             if (!to || to < from) return null;
         }
 
-        const offset = offRaw ? parseInt(offRaw, 10) : 1;
-        if (!offset || offset < 1) return null;
+        // offset 允许 0 与负数（场景 J：媒体库集号比目标集号大时用），
+        // 故只校验「是整数」，不校验正负；算出的目标集号 < 1 时后端会跳过并告警。
+        const offsetRaw = offRaw === '' ? 1 : parseInt(offRaw, 10);
+        if (Number.isNaN(offsetRaw)) return null;
+        const offset = offsetRaw;
 
         const seg = { from: from, to: to, subject_id: sid, offset: offset };
         // season 取上方「季度」输入；为空则不写（对该标题所有季生效）
@@ -105,7 +108,7 @@ const MappingModal = (function () {
         const seg = buildSegment();
         if (!seg) {
             preview.innerHTML =
-                '<span class="text-danger">请填写完整且合法的分段信息（集号与条目 ID 均为正整数）</span>';
+                '<span class="text-danger">请填写完整且合法的分段信息（集号与条目 ID 须为整数）</span>';
             return;
         }
         const seasonText = seg.season ? `S${seg.season} ` : '';
@@ -115,21 +118,23 @@ const MappingModal = (function () {
         preview.innerHTML =
             `<span class="text-success">` +
             `媒体库 ${seasonText}${span} → 条目 <a href="https://bgm.tv/subject/${seg.subject_id}" target="_blank">${seg.subject_id}</a>` +
-            `（E${seg.from}→该条目 E${first}，E${seg.from + 1}→E${second}，依次类推）` +
+            `（E${seg.from}→该条目第 ${first} 集，E${seg.from + 1}→第 ${second} 集，依次类推）` +
             `</span>`;
     }
 
     /**
      * 调后端拉取目标条目的章节列表，推算该段第 1 集对应的目标集号。
      *
-     * 做法：取该条目**首个正片章节的 sort** 作为 offset。理由：典型用法
-     * （TMDB 3 季 vs Bangumi 2 季）中用户选中的正是这一段所属的条目，
-     * 所以「这一段第 1 集」应对齐到该条目的第 1 集；而 sort 不一定从 1 开始
-     * （条目可能含 SP/OP 等非正片章节，或长篇续集 sort 从 99 起），
-     * 因此从返回数据里取，而不是写死 1。
+     * offset 的语义是**条目内第几集（ep）**，不是章节的 sort。
+     * 后端 `_match_target_ep_rows` 先按 ep（`sort − 首个正片 sort + 1`）匹配，
+     * 匹配不上才回退 sort；所以「把本段第 1 集对齐到该条目第 1 集」= offset 1。
      *
-     * 注意这是**启发式**，不一定符合所有情况；推算后必须让用户核对预览，
-     * 不对就直接手改「对应该条目的第几集」。
+     * 历史 bug：这里曾填 `eps[0].sort`。对 sort 不从 1 开始的条目（如 sort 13–36），
+     * 会填出 offset=13，媒体 E1 被算成目标第 13 集，然后按 **ep** 命中真正的第 13 集
+     * （sort 25）—— 静默标错且预览看不出来。现在改为 ep 语义。
+     *
+     * 仍会请求章节列表：用于确认该条目确实有正片章节（没有则无法推算），
+     * 并让用户核对集数是否与预期一致。
      */
     async function prefillOffset() {
         const sid = _val('seg-subject-id').trim();
@@ -156,17 +161,20 @@ const MappingModal = (function () {
                 return;
             }
 
-            // 把「本段第 1 集」对齐到该条目的首个正片章节
-            const firstSort = eps[0].sort;
-            _setVal('seg-offset', firstSort);
+            // offset 用 ep 语义（条目内第几集）：「本段第 1 集」对齐到该条目第 1 集，
+            // 即 offset = 1。不能填 sort —— 后端按 ep 匹配，填 sort 会错位。
+            _setVal('seg-offset', 1);
             updateSegmentPreview();
 
             // 若本段起始集号不是 1，提示用户确认意图 —— 这类配置最容易配错
             const hint =
                 from > 1
-                    ? `第 ${from} 集 → 该条目 E${firstSort}。若你其实想从该条目的第 1 集开始，请把起始集改为 1。`
-                    : `第 1 集 → 该条目 E${firstSort}。`;
-            showAlert(`已按该条目章节推算：${hint}请核对预览。`, 'success');
+                    ? `第 ${from} 集 → 该条目第 1 集。若你其实想从该条目的其它集开始，请手动改「对应该条目的第几集」。`
+                    : `第 1 集 → 该条目第 1 集。`;
+            showAlert(
+                `已按该条目章节推算：${hint}（该条目共 ${eps.length} 个正片章节，请核对预览）`,
+                'success'
+            );
         } catch (error) {
             console.error('自动推算失败:', error);
             showAlert('自动推算失败，请手动填写', 'danger');

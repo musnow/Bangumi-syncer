@@ -51,19 +51,31 @@ async def update_custom_mappings(
         # 信息离病因很远。校验对「无可用账号 / 网络异常」降级放行，不会把用户
         # 的编辑挡回去。
         #
-        # 只校验**本次提交里出现的** ID，而不是回读整份配置：否则配置文件里
-        # 只要存在一个历史遗留的无效 ID（早于本功能写入、或用户手改/导入带入），
-        # 之后连「删掉那一条」「清空全部」都会被 400 挡住，用户只能去手改文件。
+        # 只校验**相对磁盘配置新增或发生变化的** ID，而不是整份提交：前端保存
+        # 时总是把全量 mappings + rules 发上来，若对全量校验，每次保存都要为
+        # 配置里每个 ID 打一轮网络（archive 未命中时每个 ID 都新建 API 客户端
+        # 同步 GET）；且配置里只要存在一个历史遗留的无效 ID（条目被删/合并、
+        # 或早期写入的书籍条目），之后连「改另一条映射」「加一条正则」都会被
+        # 400 挡住，只能先手动删掉那条或清空配置才能继续。
         #
         # 校验是阻塞式网络请求，放在线程池里跑：每个 ID 都要新建 API 客户端并
         # 同步 GET，直接在 async 处理函数里循环会阻塞事件循环。validate_subject_id
         # 是纯函数（内部只用局部客户端），故并发安全。
         from ..utils.bangumi_api.subject_validation import (
-            collect_subject_ids,
+            collect_changed_subject_ids,
             validate_subject_id,
         )
 
-        ids_to_check = collect_subject_ids(mappings, rules)
+        # 磁盘上的现状，用于求「本次实际改动了什么」的差集。
+        # 注意 get_all_rules() 返回的是过滤后的匹配用视图（丢弃 pattern/subject_id
+        # 缺失或正则编译失败的条目）——这里只做前后比对，两侧口径一致，不会因此
+        # 产生误判；真正写盘时 update_custom_mappings 会重新从磁盘读原始 rules。
+        existing_mappings = mapping_service.get_all_mappings()
+        existing_rules = mapping_service.get_all_rules()
+
+        ids_to_check = collect_changed_subject_ids(
+            mappings, rules, existing_mappings, existing_rules
+        )
         invalid: list[str] = []
         if ids_to_check:
             results = await asyncio.gather(

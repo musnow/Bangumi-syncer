@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from ...core.logging import logger
@@ -179,3 +180,93 @@ def collect_subject_ids(
             _add(rule.get("subject_id"))
 
     return seen
+
+
+def collect_changed_subject_ids(
+    mappings: dict[str, Any],
+    rules: list[Any] | None,
+    existing_mappings: dict[str, Any],
+    existing_rules: list[Any] | None,
+) -> list[str]:
+    """收集**相对磁盘配置发生变化**的 subject_id，供写入前校验。
+
+    为什么不是 :func:`collect_subject_ids`（全量）：前端每次保存（新增 / 编辑 /
+    改规则 / 导入）都会把整份 mappings + rules 塞进 body，若对全量 ID 校验，
+    每次保存都要为配置里每个 ID 打一轮 network —— archive 未命中时每个 ID 都
+    新建 API 客户端同步 GET，映射一多就是一次扇出。
+
+    更糟的是「坏 ID 绑架无关编辑」：配置里只要留着一个历史无效 ID（条目被删 /
+    合并，或早期写入的书籍条目），之后**改别的地方**也会被 400 挡住，用户只能
+    先删掉那条或清空全部配置才能继续，而这两条路本身也要经过校验。
+
+    改为只校验新增或值发生变化的 ID：
+    - 未改动的条目 → 跳过（它在磁盘上、之前已校验过或已被用户接受）；
+    - 删除的条目 → 不在本次提交里，天然不会被收集；
+    - 改坏的 ID → 仍会被拦住（这是校验存在的意义）。
+
+    比对按「按标题取出的 JSON 等价」判断，简单字符串格式 ``{"番名": "123"}``
+    与对象格式都在此列；条目标题新增 / 删除 / 内容变化都算变化。
+    ``rules`` 无稳定键，按整体 JSON 逐条比对后取差集（新增或改动的规则）。
+    """
+    changed = collect_subject_ids(_changed_entries(mappings, existing_mappings))
+    changed.extend(_collect_ids_from_rules(_changed_rules(rules, existing_rules)))
+    # 去重保序：同一个 ID 可能同时出现在映射与规则里
+    out: list[str] = []
+    for sid in changed:
+        if sid and sid not in out:
+            out.append(sid)
+    return out
+
+
+def _canonical(value: Any) -> str:
+    """把映射条目 / 规则序列化成可比较的规范字符串。"""
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        return repr(value)
+
+
+def _changed_entries(
+    mappings: dict[str, Any], existing_mappings: dict[str, Any]
+) -> dict[str, Any]:
+    """本次提交里新增或内容变化的映射条目。"""
+    out: dict[str, Any] = {}
+    for title, entry in (mappings or {}).items():
+        if title not in (existing_mappings or {}):
+            out[title] = entry
+            continue
+        if _canonical(entry) != _canonical(existing_mappings[title]):
+            out[title] = entry
+    return out
+
+
+def _changed_rules(
+    rules: list[Any] | None, existing_rules: list[Any] | None
+) -> list[Any]:
+    """本次提交里新增或内容变化的规则。
+
+    规则没有稳定主键（用户可改 pattern / subject_id / season / description），
+    故按规范化后的**多重集合**做差：磁盘上已有的形态各消耗一个，剩下的是新增
+    或改动过的规则。这样「编辑一条规则」只会校验那条规则的新 ID，而不是全部。
+    """
+    pool: list[str] = [_canonical(r) for r in (existing_rules or [])]
+    out: list[Any] = []
+    for rule in rules or []:
+        key = _canonical(rule)
+        if key in pool:
+            pool.remove(key)  # 未改动：消耗掉磁盘上的对应项
+            continue
+        out.append(rule)
+    return out
+
+
+def _collect_ids_from_rules(rules: list[Any] | None) -> list[str]:
+    """从规则列表里收集 subject_id（去重保序）。"""
+    out: list[str] = []
+    for rule in rules or []:
+        if not isinstance(rule, dict):
+            continue
+        sid = str(rule.get("subject_id") or "").strip()
+        if sid and sid not in out:
+            out.append(sid)
+    return out
