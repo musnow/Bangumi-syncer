@@ -250,6 +250,29 @@ class NotificationTemplateManager:
                 found = cls._consume_sentinel(item) or found
         return found
 
+    @staticmethod
+    def derive_ep_label(data: dict[str, Any]) -> str:
+        """推导集数标签：``"S01E02"`` / ``"剧场版"``；无集数信息时为空串。
+
+        调用方已显式给出 ``ep_label`` 时原样返回（不覆盖）。
+
+        判定以**数据本身**为准（是否真的带 season/episode），而非类型：
+        追番总结、API 错误、磁盘告警这类通知根本没有集数字段，补零兜底会在
+        正文里留下无意义的 ``S00E00``；返回空串配合模板的「无值省略」才是
+        正确语义。
+        """
+        existing = data.get("ep_label")
+        if existing:
+            return str(existing)
+        if str(data.get("media_type") or "") == "movie":
+            return "剧场版"
+        season = data.get("season")
+        episode = data.get("episode")
+        # 两者都缺（或为 None）才认为「没有集数信息」；0 是合法季/集号，保留。
+        if season is None and episode is None:
+            return ""
+        return f"S{int(season or 0):02d}E{int(episode or 0):02d}"
+
     def render_email(
         self, data: dict[str, Any], template_name: str = "default"
     ) -> dict[str, str | None]:
@@ -267,6 +290,11 @@ class NotificationTemplateManager:
         """
         raw_html = self.find_asset("email", template_name, "html")
         raw_text = self.find_asset("email", template_name, "txt")
+
+        # 集数标签在正文模板里被引用，但调用方不一定注入（如直接调 render_email）。
+        # 这里补齐，保证模板单独可用；已有值时不覆盖。
+        if not data.get("ep_label"):
+            data = {**data, "ep_label": self.derive_ep_label(data)}
 
         # 主题回退：优先用类型标题（如 "📊 追番总结 - 每日总结"），
         # 与 webhook payload 的 title 保持同一来源。

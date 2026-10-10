@@ -40,7 +40,7 @@ notification_service.notify(event_type, item, source, **kwargs)
 | `in_app_type` / `in_app_title_template` | 触发站内信时的类型与标题模板 |
 | `visible_in_ui` / `category` | 配置页展示与归类 |
 
-默认模板 `templates/notifications/webhook/default.json` 里的 `"extra": "__type_fields__"` 是**哨兵值**，渲染时会被整体替换为该类型的专属字段；邮件模板则通过 `{summary_text}` 等占位符取用。新增通知类型时，若它有通用占位符表达不了的信息，在注册表里加 `payload_fields` 即可，无需改任何渠道代码。
+默认模板 `templates/notifications/webhook/default.json` 里的 `"extra": "__type_fields__"` 是**哨兵值**：渲染时该键被整体摘掉，专属字段被 `merge_type_fields` 平铺到 payload **顶层**（发出去的 JSON 里没有 `extra`）；邮件模板则通过 `{summary_text}` 等占位符取用。新增通知类型时，若它有通用占位符表达不了的信息，在注册表里加 `payload_fields` 即可，无需改任何渠道代码。
 
 ---
 

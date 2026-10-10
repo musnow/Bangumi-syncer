@@ -181,14 +181,35 @@ Bangumi-syncer 可以在关键时刻主动给你发消息——同步成功、�
   "timestamp": "{timestamp}",
   "user": "{user_name}",
   "anime": "{title}",
-  "episode": "S{season}E{episode}",
+  "episode": "{ep_label}",
   "source": "{source}",
   "error": "{error_message}",
   "extra": "__type_fields__"
 }
 ```
 
-其中 `extra` 会被自动替换为**该事件类型特有的字段**（见下方「事件专属字段」）。例如追番总结会多出 `summary`、`job_name`、`date_range` 等，同步失败会多出 `error_type`。
+其中 `"extra": "__type_fields__"` 是一个**标记**（哨兵值），不是最终发出的键。渲染时这个键会被**整体摘掉**，同时把**该事件类型特有的字段平铺到 JSON 的顶层**（见下方「事件专属字段」）。
+
+以追番总结为例，**实际发出去的内容**长这样（注意：**没有 `extra` 键**，`summary` 等直接在顶层）：
+
+```json
+{
+  "title": "📊 追番总结 - 每日总结",
+  "type": "watching_summary_daily",
+  "timestamp": "2026-08-15 09:00:00",
+  "user": "alice",
+  "anime": "",
+  "episode": "S00E00",
+  "source": "summary",
+  "error": "",
+  "job_name": "每日总结",
+  "summary": "本周共观看 3 部番剧，合计 12 集……",
+  "date_range": "2026-08-09 ~ 2026-08-15",
+  "record_count": 12
+}
+```
+
+所以接 Webhook 时请**直接取顶层字段**（如 `summary`、`job_name`），**不要**去取 `extra.summary` —— 那个路径永远是空的。
 
 - **邮件**：所有事件共用 `templates/notifications/email/default.html` 单文件。邮件主题从 HTML 的 `<title>` 标签提取（与 Webhook 的 `title` 同源，因此追番总结会显示为「📊 追番总结 - 任务名」），纯文本 body 由 HTML 去标签生成作为 fallback。追番总结的正文会渲染在邮件正文区。
 - **企业微信 / 钉钉**：渠道配置的「消息模板」字段留空时，由代码内置构造消息体（`text` 或 `markdown` 两种格式）。
@@ -221,7 +242,8 @@ Bangumi-syncer 可以在关键时刻主动给你发消息——同步成功、�
 | `{ori_title}`  | 媒体服务器传来的原始标题                       | `Frieren S01E12`    |
 | `{bgm_title}`  | 匹配到 Bangumi 后的中文标题                    | `葬送的芙莉莲`      |
 | `{season}`     | 季号                                           | `1`                 |
-| `{episode}`    | 集号                                           | `12`                |
+| `{episode}`    | 集号（纯数字，未补零）                         | `12`                |
+| `{ep_label}`   | 集数标签（补零；剧场版为「剧场版」）           | `S01E12` / `剧场版` |
 | `{media_type}` | 媒体类型                                       | `episode` / `movie` |
 | `{subject_id}` | Bangumi 番剧 ID                                | `425602`            |
 | `{episode_id}` | Bangumi 单集 ID                                | `1234567`           |
@@ -253,7 +275,7 @@ Bangumi-syncer 可以在关键时刻主动给你发消息——同步成功、�
 
 ### 事件专属字段
 
-除了上面这些通用占位符，**每类事件还有自己的专属字段**，会由系统自动附加到 Webhook 的 `extra` 里、并渲染进邮件正文。你不必手动声明：
+除了上面这些通用占位符，**每类事件还有自己的专属字段**，会由系统自动**平铺到 Webhook JSON 的顶层**（不是塞进 `extra`，`extra` 只是模板里的标记键，详见下节），并渲染进邮件正文。你不必手动声明：
 
 | 事件                       | 专属字段                                                                 |
 | -------------------------- | ------------------------------------------------------------------------ |
@@ -262,6 +284,7 @@ Bangumi-syncer 可以在关键时刻主动给你发消息——同步成功、�
 | 匹配歧义 `match_ambiguous` | `final_subject_id`、`top1_name`、`top1_subject_id`、`top1_score`、`top2_name`、`top2_subject_id`、`top2_score`、`score_diff` |
 | 标记成功 / 跳过 / 排队     | `subject_id`、`episode_id`、`bgm_title`、`bgm_username`                   |
 | 找到番剧 `bangumi_id_found` | `subject_id`、`bgm_title`                                                |
+| 同步失败 `mark_failed`     | `error_type`、`additional_info`                                          |
 | 今日放送 `airing_today`    | `airdate`、`total`                                                       |
 | 批量同步汇总               | `total`、`succeeded`、`failed`、`skipped`                                 |
 | 队列积压告警               | `pending_count`、`threshold`                                             |
@@ -272,9 +295,15 @@ Bangumi-syncer 可以在关键时刻主动给你发消息——同步成功、�
 | 总结任务 / LLM 失败        | `job_name`（LLM 失败另有 `model`）                                        |
 | API 类错误                 | `status_code`（重试失败另有 `url`、`method`、`retry_count`）              |
 
-其余类型（如 `mark_failed`、`anime_not_found`）没有专属字段，用通用占位符即可。
+未在上表列出的类型（如 `anime_not_found`、`config_error`、`request_received`）没有专属字段，用通用占位符即可。
 
-这些字段的取值规则是：**有值才出现，无值则整个键省略**（不会输出 `0` 或空串）。
+这些字段的取值规则见下方[脚注](#事件专属字段的取值规则)。
+
+#### 事件专属字段的取值规则
+
+**只有 `None` 和空串 `""` 会被省略**——键根本不存在，而不是输出 `null` 或空串。
+
+**`0` 和 `False` 是有效值，会被保留。** 例如 `record_count: 0`（本期没有任何观看记录）、`is_timeout: false`（任务失败但不是超时）都会正常发出。消费方应把「键不存在」理解为「这项信息没有」，而不是「值为 0」——两者含义不同。
 
 ---
 
@@ -297,13 +326,15 @@ Bangumi-syncer 可以在关键时刻主动给你发消息——同步成功、�
 ### ⚠️ 自定义前必读：不要丢掉 `extra`
 
 ::: danger 这一步做错会导致内容静默丢失
-Webhook 的默认模板用一个特殊值 `"extra": "__type_fields__"` 来接收**事件专属字段**（如追番总结的 `summary`）。你自己写模板时：
+Webhook 的默认模板用一个特殊值 `"extra": "__type_fields__"` 来开启**事件专属字段**（如追番总结的 `summary`）。你自己写模板时：
 
-- **要保留专属字段** → 原样写下 `"extra": "__type_fields__"`。
+- **要保留专属字段** → 原样写下 `"extra": "__type_fields__"`。渲染时这个键会被摘掉，字段被**平铺到 JSON 顶层**。
 - **不要**写成 `"extra": {}` 或省略 —— 那样追番总结就只有标题、没有正文。
 - **不要**把专属字段手抄成固定的空值（如 `"summary": ""`），那会把真实内容覆盖成空。
 
 **你写的模板就是最终发出的内容**：只有你显式写下 `"extra": "__type_fields__"`，系统才会把事件专属字段附加上去；没写就一个都不会加。这样严格的接收端（会拒绝未知字段的）不会被塞入你没声明过的键。你显式写的键始终优先于自动附加的字段。正因为默认模板已经写好了这一行，我们才建议把「消息模板」留空用默认模板。
+
+再强调一次：`extra` 本身**不会**出现在发出去的 JSON 里——它只是「在这里展开专属字段」的占位标记，发出的字段在**顶层**。
 :::
 
 **正确的自定义 Webhook 模板示例**（在默认结构上增加自己的字段）：
@@ -315,7 +346,7 @@ Webhook 的默认模板用一个特殊值 `"extra": "__type_fields__"` 来接收
   "timestamp": "{timestamp}",
   "user": "{user_name}",
   "anime": "{title}",
-  "episode": "S{season}E{episode}",
+  "episode": "{ep_label}",
   "error": "{error_message}",
   "extra": "__type_fields__",
   "my_custom_field": "固定值",
@@ -360,7 +391,7 @@ Docker 部署时，需要把 `templates` 目录挂载进容器。在 `docker-com
   </head>
   <body style="font-family: sans-serif; padding: 20px;">
     <h2 style="color: #dc3545;">{type_icon} {type_display_name}</h2>
-    <p><strong>番剧：</strong>{title} S{season}E{episode}</p>
+    <p><strong>番剧：</strong>{title} {ep_label}</p>
     <p><strong>用户：</strong>{user_name}</p>
     <p><strong>时间：</strong>{timestamp}</p>
     <p><strong>错误：</strong>{error_message}</p>
@@ -464,7 +495,7 @@ Docker 部署时，需要把 `templates` 目录挂载进容器。在 `docker-com
 {
   "msgtype": "markdown",
   "markdown": {
-    "content": "## {type_icon} {type_display_name}\n\n> **番剧**: {title} S{season}E{episode}\n> **用户**: {user_name}\n> **时间**: {timestamp}\n\n{error_message}"
+    "content": "## {type_icon} {type_display_name}\n\n> **番剧**: {title} {ep_label}\n> **用户**: {user_name}\n> **时间**: {timestamp}\n\n{error_message}"
   }
 }
 ```
@@ -494,7 +525,7 @@ Docker 部署时，需要把 `templates` 目录挂载进容器。在 `docker-com
 
 ### Q：怎么给「追番总结」单独配模板？
 
-**通常不需要。** 追番总结（`watching_summary_{name}`）用默认模板就能正确发送：Webhook 的 `extra` 里会带总结正文，邮件的正文区也会渲染它，标题里还带任务名。
+**通常不需要。** 追番总结（`watching_summary_{name}`）用默认模板就能正确发送：Webhook 的 JSON **顶层**会带总结正文（`summary`、`job_name` 等），邮件的正文区也会渲染它，标题里还带任务名。
 
 只有在你想换排版时才需要自定义：
 
@@ -510,7 +541,7 @@ Docker 部署时，需要把 `templates` 目录挂载进容器。在 `docker-com
 
 1. Web 界面的「配置管理 → 通知配置 → 测试」按钮：向指定渠道发一条固定测试事件，走的是**和线上完全相同**的渲染路径（包括事件专属字段）。
 2. 临时改模板后无需重启程序：通知系统**每次事件都重新读模板**。
-3. 调试自定义模板时，先用 Webhook 收一份默认模板的实际输出作为对照，再在此基础上改——这样不容易漏掉 `extra`。
+3. 调试自定义模板时，先用 Webhook 收一份默认模板的实际输出作为对照，再在此基础上改——这样不容易漏掉 `"extra": "__type_fields__"` 这一行。
 
 ### Q：升级后我的通知内容和以前不一样了？
 

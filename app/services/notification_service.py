@@ -80,7 +80,14 @@ class CooldownPolicy:
         key = f"{channel_id}::{notification_type}"
         meta = get_type_meta(notification_type)
         if meta and meta.is_item_level:
-            item_key = f"{data.get('title', '')}::S{data.get('season', 0)}E{data.get('episode', 0)}"
+            # 季/集号可能为 None（条目级通知理论上总有值，这里只做兜底格式化，
+            # 避免 None 拼进 key 变成 "SNoneENone" 影响冷却分桶）。
+            _s = data.get("season")
+            _e = data.get("episode")
+            item_key = (
+                f"{data.get('title', '')}::S{0 if _s is None else _s}"
+                f"E{0 if _e is None else _e}"
+            )
             # bgm_username 区分多账号：同一条目被多个 Bangumi 账号标记时，
             # 各账号的通知使用各自的 key，避免非首选账号被首选账号的冷却拦截。
             account_key = data.get("bgm_username", "") or ""
@@ -337,8 +344,10 @@ class NotificationService:
             "user_name": "unknown",
             "title": "unknown",
             "ori_title": "",
-            "season": 0,
-            "episode": 0,
+            # 季/集号默认 None（而非 0）：追番总结、API 错误等类型本就没有集数，
+            # 这里是「无此信息」而非「第 0 季第 0 集」，供 {ep_label} 判空省略。
+            "season": None,
+            "episode": None,
             "source": "",
         }
         if item is not None:
@@ -425,16 +434,11 @@ class NotificationService:
         meta = get_type_meta(notification_type)
         type_data = dict(data)
         type_data.setdefault("notification_type", notification_type)
-        # 集数标签（如 "S01E02" / "剧场版"）：标题模板与站内信标题共用，
-        # 需在渲染 payload_title 之前就位。
+        # 集数标签（如 "S01E02" / "剧场版"）：标题模板、webhook 与邮件正文共用，
+        # 需在渲染 payload_title 之前就位。无集数信息的类型（追番总结、API 错误、
+        # 磁盘告警等）为空串，配合模板的「无值省略」，避免出现无意义的 S00E00。
         if not type_data.get("ep_label"):
-            media_type = str(type_data.get("media_type") or "")
-            if media_type == "movie":
-                type_data["ep_label"] = "剧场版"
-            else:
-                season = type_data.get("season") or 0
-                episode = type_data.get("episode") or 0
-                type_data["ep_label"] = f"S{int(season):02d}E{int(episode):02d}"
+            type_data["ep_label"] = self.template_mgr.derive_ep_label(type_data)
         if meta:
             type_data.setdefault("type_display_name", meta.display_name)
             type_data.setdefault("type_icon", meta.icon)
@@ -443,6 +447,9 @@ class NotificationService:
             rendered_title = self.template_mgr.render_string(
                 meta.default_title(), _SafeFormatDict(type_data)
             )
+            # 占位符为空（如无集数时的 {ep_label}）会在标题里留下多余空格，
+            # 归一化空白，避免出现 "同步失败 - 番剧名 " 这种尾随空格。
+            rendered_title = " ".join(rendered_title.split())
             type_data.setdefault("payload_title", rendered_title)
         else:
             type_data.setdefault("payload_title", type_data.get("title", ""))

@@ -107,9 +107,16 @@ class TestEpisodeLabel:
         )
         assert r["payload"]["episode"] == "剧场版"
 
-    def test_missing_season_episode_does_not_crash(self, svc, webhook):
+    def test_missing_season_episode_omits_label(self, svc, webhook):
+        """无季/集号信息时集数标签为空串（「无值省略」），而不是 S00E00。
+
+        原先补零兜底会在正文/标题里留下无意义的 S00E00；现在由
+        derive_ep_label 返回空串，交由模板的「无值省略」处理。
+        """
         r = svc._render_for_channel(webhook, "mark_success", {"title": "T"})
-        assert r["payload"]["episode"] == "S00E00"
+        assert r["payload"]["episode"] == ""
+        # 标题里不应出现凭空补出来的 S00E00
+        assert "S00E00" not in r["payload"]["title"]
 
     def test_existing_ep_label_preserved(self, svc, webhook):
         """调用方已显式给出 ep_label 时不应被覆盖"""

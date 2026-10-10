@@ -38,7 +38,7 @@ class TestPlainTextTemplate:
         # 关键行都在
         assert "📊 追番总结 - 每日总结" in body
         assert "时间：2026-08-15 10:00:00" in body
-        assert "番剧：葬送的芙莉莲 S1E12" in body
+        assert "番剧：葬送的芙莉莲 S01E12" in body
         assert "用户：张三" in body
         assert "来源：plex" in body
 
