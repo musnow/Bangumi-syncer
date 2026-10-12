@@ -282,20 +282,23 @@ Bangumi-syncer 可以在关键时刻主动给你发消息——同步成功、�
 | 追番总结 `watching_summary` | `job_name`、`summary`、`date_range`、`record_count`、`model`、`tokens_used` |
 | 候选待确认 `pending_candidate` | `candidates_count`、`top_candidate_id`、`top_candidate_name`            |
 | 匹配歧义 `match_ambiguous` | `final_subject_id`、`top1_name`、`top1_subject_id`、`top1_score`、`top2_name`、`top2_subject_id`、`top2_score`、`score_diff` |
-| 标记成功 / 跳过 / 排队     | `subject_id`、`episode_id`、`bgm_title`、`bgm_username`                   |
+| 标记成功 / 跳过             | `subject_id`、`episode_id`、`bgm_title`、`bgm_username`                   |
+| 入队待补发 `sync_queued`   | `subject_id`、`episode_id`、`bgm_title`                                   |
 | 找到番剧 `bangumi_id_found` | `subject_id`、`bgm_title`                                                |
 | 同步失败 `mark_failed`     | `error_type`、`additional_info`                                          |
 | 今日放送 `airing_today`    | `airdate`、`total`                                                       |
 | 批量同步汇总               | `total`、`succeeded`、`failed`、`skipped`                                 |
 | 队列积压告警               | `pending_count`、`threshold`                                             |
 | IP 锁定 `ip_locked`        | `ip`、`locked_until`、`attempt_count`、`max_attempts`                     |
+| Web 登录失败 `auth_login_failed` | `ip`                                                                |
 | 归档磁盘告警               | `available_mb`、`required_mb`、`warning_threshold_mb`                     |
+| 档案库构建失败 `archive_build_failed` | `task_id`                                                       |
 | 版本升级可用               | `current_version`、`latest_version`                                       |
 | 调度任务失败               | `driver`、`is_timeout`                                                    |
 | 总结任务 / LLM 失败        | `job_name`（LLM 失败另有 `model`）                                        |
-| API 类错误                 | `status_code`（重试失败另有 `url`、`method`、`retry_count`）              |
+| API 类错误                 | `status_code`（重试失败另有 `url`、`method`、`retry_count`；Token 过期另有 `user_name`） |
 
-未在上表列出的类型（如 `anime_not_found`、`config_error`、`request_received`）没有专属字段，用通用占位符即可。
+未在上表列出的类型（如 `anime_not_found`、`config_error`、`request_received`、`sync_failed`）没有专属字段，用通用占位符即可。上表按「事件」归类，同一行可能覆盖多个类型 id。
 
 这些字段的取值规则见下方[脚注](#事件专属字段的取值规则)。
 
@@ -319,7 +322,7 @@ Bangumi-syncer 可以在关键时刻主动给你发消息——同步成功、�
 
 | 方式 | 配置方式 | 适用渠道 | 风险 |
 | --- | --- | --- | --- |
-| **自定义模板（文件）** | 在 `templates/<channel>/` 目录放文件 | **仅 Webhook 与邮件** | 中：文件覆盖默认模板，升级后不会自动获得新字段 |
+| **自定义模板（文件）** | 在 `templates/notifications/<channel>/` 目录放文件 | **仅 Webhook 与邮件** | 中：文件覆盖默认模板，升级后不会自动获得新字段 |
 | **内联 JSON** | 渠道配置中直接粘 JSON 字符串 | **Webhook / 企业微信 / 钉钉** | 高：写死在配置里，最容易漏掉事件专属字段 |
 | 默认模板（推荐） | 模板字段留空 | 全部 | 无 |
 
@@ -356,18 +359,20 @@ Webhook 的默认模板用一个特殊值 `"extra": "__type_fields__"` 来开启
 
 ### 自定义模板文件（仅 Webhook / 邮件）
 
-1. 在项目根目录查找 `templates/<channel>/` 目录，其中 `<channel>` 取值为 `webhook` 或 `email`。
+1. 在项目根目录查找 `templates/notifications/<channel>/` 目录，其中 `<channel>` 取值为 `webhook` 或 `email`。
 2. 在该目录下放置与默认模板**同名**的文件即可覆盖（Webhook 是 `.json`，邮件是 `.html`）。
-3. 渠道配置中模板字段**填入文件名**（不含扩展名）。例如 `default` 表示使用 `templates/webhook/default.json`（或邮件的 `templates/email/default.html`）。
+3. 渠道配置中模板字段**填入文件名**（不含扩展名）。例如 `default` 表示使用 `templates/notifications/webhook/default.json`（或邮件的 `templates/notifications/email/default.html`）。
 
 **目录结构示例**：
 
 ```
 templates/
-├── webhook/
-│   └── default.json         # Webhook 默认模板
-└── email/
-    └── default.html         # 邮件默认 HTML 模板
+└── notifications/           # 通知模板都在这一层下
+    ├── webhook/
+    │   └── default.json     # Webhook 默认模板
+    └── email/
+        ├── default.html     # 邮件默认 HTML 模板
+        └── default.txt      # 邮件纯文本部件（可选）
 ```
 
 ::: tip Docker 部署
@@ -411,16 +416,17 @@ Docker 部署时，需要把 `templates` 目录挂载进容器。在 `docker-com
 **多套模板按需切换**：文件名自由命名（如 `default.html`、`fancy.html`），不带扩展名的部分就是「模板名」。在渠道配置的「自定义模板文件路径」填该名字即可：
 
 - 留空 → 用默认模板 `templates/notifications/email/default.html`
-- 填 `fancy` → 用 `templates/email/fancy.html`
+- 填 `fancy` → 用 `templates/notifications/email/fancy.html`
+
+> 模板一律放在仓库的 `templates/notifications/email/` 目录下（注意有 `notifications` 这一层）。自定义模板**不是**放在别处再靠配置指过去——「自定义模板文件路径」填的是**模板名**，不是文件路径，系统只在上述目录里按名字查找。
 
 ### 邮件模板查找优先级
 
 完整查找顺序（排在前面的优先）：
 
 1. 渠道配置的 `email_subject` 字段（仅覆盖主题，不覆盖正文）
-2. 自定义目录 `templates/email/<name>.html`（`<name>` 来自渠道配置的「自定义模板文件路径」）
-3. 仓库默认目录 `templates/notifications/email/<name>.html`
-4. 代码 fallback（返回 `[Bangumi-Syncer] {payload_title}` 主题 + 空 body）
+2. 仓库模板目录 `templates/notifications/email/<name>.html`（`<name>` 来自渠道配置的「自定义模板文件路径」，留空时为 `default`）
+3. 代码 fallback（返回 `[Bangumi-Syncer] {payload_title}` 主题 + 空 body）
 
 ::: tip 纯文本正文来自同名的 .txt 模板
 邮件是 `multipart/alternative`（HTML + 纯文本双部件）。纯文本部件优先取同名的 `templates/notifications/email/<name>.txt`，这样纯文本阅读时不会有 HTML 模板的缩进空白。你只提供 `.html` 时也能工作——系统会退化为「去标签 + 压缩空白」。
@@ -438,7 +444,7 @@ Docker 部署时，需要把 `templates` 目录挂载进容器。在 `docker-com
 纯文本部件（`text/plain`）同样不做转义，保持原文。
 
 ::: tip 永远不会报错
-查找顺序「自定义目录 → 默认目录 → 代码 fallback」保证**永远不会因为模板问题导致通知发不出去**。最多是「自定义模板没生效」——先确认文件名拼写一致，再确认扩展名正确（Webhook 是 `.json`，邮件是 `.html`）。
+查找顺序「模板目录 → 代码 fallback」保证**永远不会因为模板问题导致通知发不出去**。最多是「自定义模板没生效」——先确认文件名拼写一致，再确认扩展名正确（Webhook 是 `.json`，邮件是 `.html`）。
 :::
 
 ### 测试与调试
@@ -516,12 +522,12 @@ Docker 部署时，需要把 `templates` 目录挂载进容器。在 `docker-com
 在渠道配置或通知规则中，模板字段：
 
 - **留空** = 默认（Webhook 走 `webhook/default.json`，邮件走 `email/default.html`，企业微信/钉钉走代码内置构造，站内信走注册表 `in_app_title_template`）
-- **Webhook / 邮件**：填了纯字母（如 `default`）= 引用 `templates/<channel>/default.*` 文件
+- **Webhook / 邮件**：填了纯字母（如 `default`）= 引用 `templates/notifications/<channel>/default.*` 文件
 - **Webhook / 企业微信 / 钉钉**：填了 `{` 开头 = 内联 JSON
 
 ### Q：自定义模板放错了位置会怎样？
 
-查找顺序「自定义目录 → 默认目录 → 代码 fallback」保证**永远不会报错**。最多是「自定义模板没生效」——先确认文件名拼写一致，再确认扩展名正确（Webhook 是 `.json`，邮件是 `.html`）。
+查找顺序「模板目录 → 代码 fallback」保证**永远不会报错**。最多是「自定义模板没生效」——先确认文件名拼写一致，再确认扩展名正确（Webhook 是 `.json`，邮件是 `.html`）。
 
 ### Q：怎么给「追番总结」单独配模板？
 
@@ -529,8 +535,8 @@ Docker 部署时，需要把 `templates` 目录挂载进容器。在 `docker-com
 
 只有在你想换排版时才需要自定义：
 
-- **Webhook**：在 `templates/webhook/default.json` 放模板（Webhook 所有事件共用 `default.json`）。**务必保留 `"extra": "__type_fields__"`**，否则会丢掉总结正文。
-- **邮件**：在 `templates/email/default.html` 放模板（邮件所有事件共用 `default.html`）。**务必保留 `{summary_text}`**。
+- **Webhook**：在 `templates/notifications/webhook/default.json` 放模板（Webhook 所有事件共用 `default.json`）。**务必保留 `"extra": "__type_fields__"`**，否则会丢掉总结正文。
+- **邮件**：在 `templates/notifications/email/default.html` 放模板（邮件所有事件共用 `default.html`）。**务必保留 `{summary_text}`**。
 - **企业微信 / 钉钉**：在渠道配置的「消息模板」字段填内联 JSON，把 `{summary_text}` 写进 content。
 
 ::: tip Webhook 与邮件当前共用单文件
