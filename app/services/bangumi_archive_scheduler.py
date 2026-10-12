@@ -1,7 +1,7 @@
 """Bangumi Archive 周更调度器
 
 继承 BaseScheduler，按 [bangumi-archive] update_cron 定时触发更新。
-默认 cron: "0 6 * * 3"（每周三 06:00，晚于官方 05:00 发布）。
+默认 cron: "0 8 * * 3"（每周三 08:00，晚于官方 05:00 发布）。
 """
 
 from __future__ import annotations

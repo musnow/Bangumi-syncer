@@ -3,6 +3,7 @@ Trakt 测试配置和 fixture
 """
 
 import asyncio
+import atexit
 import os
 import shutil
 import sqlite3
@@ -20,6 +21,30 @@ _REPO_ROOT = Path(__file__).parent.parent
 _ORIG_CONFIG_INI = _REPO_ROOT / "config.ini"
 _ORIG_CONFIG_EXAMPLE = _REPO_ROOT / "config.example.ini"
 _TEST_CONFIG_DIR = Path(tempfile.mkdtemp(prefix="bs_test_config_"))
+
+
+def _cleanup_test_config_dir() -> None:
+    """退出时回收临时配置目录。
+
+    注意顺序：必须先关掉 SQLite 连接再删目录。Windows 上文件句柄会锁住
+    ``data/sync_records.db``，直接 ``rmtree`` 会抛 ``WinError 32
+    (另一个程序正在使用此文件)``，加了 ``ignore_errors`` 就会**静默失败**
+    而残留整个目录。``database_manager`` 是全局单例，此处直接引用。
+
+    ``mkdtemp`` 建在系统临时目录下，但本环境的 ``tempfile.gettempdir()``
+    会退化为进程 CWD，导致残留目录落在仓库根（含 200KB+ 的 db），既污染
+    ``git status`` 又可能被误提交，故显式回收。
+    """
+    try:
+        from app.core.database import database_manager
+
+        database_manager.close()
+    except Exception:  # noqa: BLE001 - 清理路径不应影响退出码
+        pass
+    shutil.rmtree(_TEST_CONFIG_DIR, ignore_errors=True)
+
+
+atexit.register(_cleanup_test_config_dir)
 _TEST_CONFIG_INI = _TEST_CONFIG_DIR / "config.ini"
 
 _use_local_config = os.environ.get("BS_TEST_USE_LOCAL_CONFIG", "") == "1"

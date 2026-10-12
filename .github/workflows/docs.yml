@@ -6,12 +6,24 @@ on:
       - main
     paths:
       - 'docs/**'
+      # 通知模板被 docs 以 snippet（<<< @/../templates/...）直接引用，
+      # 模板改名/删除会让 docs 构建失败，故其变更也要触发本工作流。
+      - 'templates/notifications/**'
+      - 'AGENTS.md'
+      - 'CLAUDE.md'
+      - 'CONTRIBUTING.md'
+      - 'scripts/sync-dev-docs.mjs'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/docs.yml'
   pull_request:
     paths:
       - 'docs/**'
+      - 'templates/notifications/**'
+      - 'AGENTS.md'
+      - 'CLAUDE.md'
+      - 'CONTRIBUTING.md'
+      - 'scripts/sync-dev-docs.mjs'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/docs.yml'

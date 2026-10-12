@@ -174,19 +174,10 @@ Bangumi-syncer 可以在关键时刻主动给你发消息——同步成功、�
 
 - **Webhook**：使用 `templates/notifications/webhook/default.json`，结构为：
 
-```json
-{
-  "title": "{payload_title}",
-  "type": "{notification_type}",
-  "timestamp": "{timestamp}",
-  "user": "{user_name}",
-  "anime": "{title}",
-  "episode": "{ep_label}",
-  "source": "{source}",
-  "error": "{error_message}",
-  "extra": "__type_fields__"
-}
-```
+<!-- 直接引用源文件，避免文档与模板各存一份而静默漂移。
+     文件被改名/删除时 docs 构建会直接失败（ENOENT），不会静默过期。 -->
+
+<<< @/../templates/notifications/webhook/default.json
 
 其中 `"extra": "__type_fields__"` 是一个**标记**（哨兵值），不是最终发出的键。渲染时这个键会被**整体摘掉**，同时把**该事件类型特有的字段平铺到 JSON 的顶层**（见下方「事件专属字段」）。
 
