@@ -213,3 +213,121 @@ class TestDocsExampleMatchesRealOutput:
     def test_doc_example_has_no_extra_key(self):
         """示例必须体现哨兵被摘除（顶层没有 extra 键）"""
         assert "extra" not in self._doc_example()
+
+
+class TestDocsEventFieldTableMatchesRegistry:
+    """「事件专属字段」表必须与注册表的 payload_fields 一致。
+
+    背景（review 反馈 + 全量文档扫描）：该表曾把 ``sync_queued`` 与
+    ``mark_success`` / ``mark_skipped`` 合并成一行，声称三者都带
+    ``bgm_username`` —— 实际 ``sync_queued`` 只声明了 3 个字段，不发
+    ``bgm_username``。同类问题还有三处：``bangumi_token_expired``、
+    ``auth_login_failed``、``archive_build_failed`` 有专属字段却整行缺失，
+    而正文又断言「未列出的类型没有专属字段」。
+
+    这类漂移靠人工核对很容易漏，故直接把表格解析出来与注册表比对：
+    每个声明了 payload_fields 的类型都必须在表中被提到，且表里出现的每个
+    字段名都必须真实存在。
+    """
+
+    DOC_PATH = "docs/config/notification-configuration.md"
+
+    @classmethod
+    def _table_fields(cls) -> set[str]:
+        """表格第 2 列（「专属字段」列）里出现的所有字段名。
+
+        只看第 2 列：第 1 列是事件名，里面反引号包的是**类型 id**
+        （如 `sync_queued`），那不是字段名，混进来会误报。
+        """
+        import re
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[2]
+        text = (root / cls.DOC_PATH).read_text(encoding="utf-8")
+        start = text.index("### 事件专属字段")
+        end = text.index("未在上表列出的类型")
+
+        fields: set[str] = set()
+        for line in text[start:end].splitlines():
+            line = line.strip()
+            if not line.startswith("|") or set(line) <= set("|- "):
+                continue
+            cols = [c.strip() for c in line.strip("|").split("|")]
+            if len(cols) != 2 or cols[0] == "事件" or "`" not in cols[1]:
+                continue
+            fields.update(re.findall(r"`([a-z][a-z0-9_]*)`", cols[1]))
+        return fields
+
+    @staticmethod
+    def _registry_fields() -> dict[str, list[str]]:
+        from app.core.notification_registry import all_types
+
+        return {
+            m.id: list(m.default_payload_fields().keys())
+            for m in all_types()
+            if m.default_payload_fields()
+        }
+
+    def test_no_documented_field_is_bogus(self):
+        """表里出现的字段名必须真实存在于注册表（防止臆造字段）"""
+        real = {f for fields in self._registry_fields().values() for f in fields}
+        doc = self._table_fields()
+        bogus = {f for f in doc if f not in real}
+        assert not bogus, f"文档表格里出现了注册表中不存在的字段: {sorted(bogus)}"
+
+    def test_every_type_with_fields_is_covered(self):
+        """每个声明了专属字段的类型都必须在表里被提到
+
+        判据：该类型的字段集合与表内字段集合有交集。至少一个字段出现，
+        就说明这一类型被表覆盖到了（表格用「标记成功 / 跳过」这类合并写法，
+        不要求逐类型一行）。
+        """
+        doc = self._table_fields()
+        uncovered = {
+            tid: fields
+            for tid, fields in self._registry_fields().items()
+            if not (set(fields) & doc)
+        }
+        assert not uncovered, (
+            "下列类型有专属字段，但「事件专属字段」表完全没有提到它们；"
+            "请补进表格（否则读者按正文的「未列出的类型没有专属字段」理解会出错）:\n"
+            f"  {uncovered}"
+        )
+
+    def test_sync_queued_not_credited_with_bgm_username(self):
+        """D1 回归：``sync_queued`` 不发 ``bgm_username``，表格不得把它算进去。
+
+        「覆盖度」测试只能发现**整行缺失**，发现不了「把字段错误地归给某个
+        类型」这种漂移（合并行写法下，字段名总会出现，覆盖度检查照样通过）。
+        故这里针对 ``sync_queued`` 单独钉一次：它与 mark_success/mark_skipped
+        的字段集合本就不同，实现里只声明了 3 个字段。
+        """
+        from app.core.notification_registry import get_type_meta
+
+        queued = set(get_type_meta("sync_queued").default_payload_fields())
+        success = set(get_type_meta("mark_success").default_payload_fields())
+
+        # 前提：两者字段确实不同（若将来 sync_queued 也加了 bgm_username，
+        # 这个测试会失败，提醒你同步更新文档表格而不是放任它漂移）
+        assert queued != success
+        assert "bgm_username" not in queued
+
+        # 文档里 sync_queued 那一行不得出现 bgm_username
+        import re
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[2]
+        text = (root / self.DOC_PATH).read_text(encoding="utf-8")
+        row = [
+            ln
+            for ln in text.splitlines()
+            if ln.strip().startswith("|") and "sync_queued" in ln
+        ]
+        assert row, "文档表格里找不到 sync_queued 行"
+        for ln in row:
+            assert "bgm_username" not in ln, (
+                f"文档把 bgm_username 归给了 sync_queued，但该类型不发送此字段: {ln.strip()}"
+            )
+            assert re.search(r"`bgm_title`", ln), (
+                f"sync_queued 应当列出 bgm_title: {ln.strip()}"
+            )
