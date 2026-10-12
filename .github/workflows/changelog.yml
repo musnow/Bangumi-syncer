@@ -1,0 +1,87 @@
+# 合并进 main 后，从 git 历史重新生成 docs/changelog.md。
+#
+# 采用「生成分支 + 开 PR」而不是直接 push main，原因：
+#   1. main 通常有分支保护，GITHUB_TOKEN 直接 push 会被拒；
+#   2. 生成的条目来自提交信息，人工过一眼再合并更稳妥；
+#   3. pull_request 触发的 ci-tests / docs 会顺带验证这一版文档能构建。
+#
+# 注意：本工作流自身产生的 push（分支 changelog/auto）不会再触发，
+# 因为下面只监听 main。
+name: Changelog
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+# 同一时间只跑一个，避免并发开重复 PR；但不取消进行中的（避免留下半成品分支）
+concurrency:
+  group: changelog
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          # 生成器要遍历完整历史与 tag，浅克隆会导致 `git log` 截断、
+          # `git tag` 缺失，从而算出错误的范围
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Show what will be scanned
+        run: |
+          echo "最新版本 tag: $(git tag -l 'v*' --sort=-v:refname | head -1)"
+          echo "HEAD: $(git rev-parse --short HEAD)"
+          echo "自该 tag 起提交数: $(git rev-list --count "$(git tag -l 'v*' --sort=-v:refname | head -1)..HEAD")"
+
+      - name: Generate changelog
+        run: python scripts/gen_changelog.py
+
+      - name: Detect changes
+        id: diff
+        run: |
+          if git diff --quiet -- docs/changelog.md; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "changelog 无变化，跳过"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "changelog 有变化："
+            git diff --stat -- docs/changelog.md
+          fi
+
+      - name: Create pull request
+        if: steps.diff.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: changelog/auto
+          delete-branch: true
+          base: main
+          commit-message: |
+            docs(changelog): 依据 git 历史自动更新
+
+            由 .github/workflows/changelog.yml 生成，来源为合并进 main 的提交与 PR。
+          title: 'docs(changelog): 自动更新更新日志'
+          body: |
+            本 PR 由 **Changelog** 工作流自动生成。
+
+            - 数据来源：`git log`（合并进 `main` 的 PR 及其提交）
+            - 生成脚本：`scripts/gen_changelog.py`
+            - 触发时间：${{ github.event.head_commit.timestamp || github.event.repository.updated_at }}
+
+            如需修正条目措辞，请**不要**直接改 `docs/changelog.md`
+            （下次生成会覆盖），而是修改对应的 PR 标题或提交信息后重新运行本工作流。
+          add-paths: |
+            docs/changelog.md

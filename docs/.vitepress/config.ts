@@ -79,7 +79,14 @@ export default defineConfig(
         'community.md',
         'development',
       ],
-      excludeByGlobPattern: ['**/public/**', '**/.vitepress/**', '**/_includes/**'],
+      excludeByGlobPattern: [
+        '**/public/**',
+        '**/.vitepress/**',
+        '**/_includes/**',
+        // changelog-highlights.md 是 changelog.md 的素材文件，其正文已被
+        // scripts/gen_changelog.py 内联进 changelog 页；单独成页会重复内容
+        '**/changelog-highlights.md',
+      ],
     },
   ),
 )

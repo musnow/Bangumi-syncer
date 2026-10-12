@@ -51,6 +51,12 @@ coverage.xml
 .pytest_cache/
 cover/
 
+# 测试临时目录残留。Python 的 tempfile 在某些 Windows 环境下会把
+# gettempdir() 解析为进程 CWD，导致 pytest 的 tmp_path 与
+# tests/conftest.py 的 mkdtemp 落在仓库根目录。
+pytest-of-*/
+bs_test_config_*/
+
 # Playwright E2E 产物（截图/视频/trace，仅失败时生成）
 test-results/
 
